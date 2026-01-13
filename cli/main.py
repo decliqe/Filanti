@@ -14,6 +14,12 @@ import typer
 
 from filanti import __version__
 from filanti.hashing import crypto_hash
+from filanti.crypto import (
+    encrypt_file_with_password,
+    decrypt_file_with_password,
+    get_file_metadata,
+    EncryptionAlgorithm,
+)
 
 
 # Create main CLI app
@@ -138,6 +144,179 @@ def algorithms() -> None:
         "algorithms": crypto_hash.get_supported_algorithms(),
         "default": crypto_hash.DEFAULT_ALGORITHM.value,
     })
+
+
+@app.command()
+def encrypt(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to file to encrypt",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        )
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--output", "-o",
+            help="Output path (default: input.enc)",
+        )
+    ] = None,
+    password: Annotated[
+        Optional[str],
+        typer.Option(
+            "--password", "-p",
+            help="Encryption password (prompted if not provided)",
+        )
+    ] = None,
+    algorithm: Annotated[
+        str,
+        typer.Option(
+            "--algorithm", "-a",
+            help="Encryption algorithm (aes-256-gcm, chacha20-poly1305)",
+        )
+    ] = "aes-256-gcm",
+) -> None:
+    """Encrypt a file with password-based encryption.
+
+    Uses Argon2id for key derivation and authenticated encryption.
+    """
+    try:
+        # Prompt for password if not provided
+        if password is None:
+            password = typer.prompt("Password", hide_input=True)
+            confirm = typer.prompt("Confirm password", hide_input=True)
+            if password != confirm:
+                output_error("Passwords do not match")
+
+        # Determine output path
+        out_path = output or Path(str(file) + ".enc")
+
+        # Parse algorithm
+        try:
+            enc_alg = EncryptionAlgorithm(algorithm.lower())
+        except ValueError:
+            output_error(f"Unsupported algorithm: {algorithm}")
+
+        # Encrypt
+        metadata = encrypt_file_with_password(
+            input_path=file,
+            output_path=out_path,
+            password=password,
+            algorithm=enc_alg,
+        )
+
+        output_json({
+            "success": True,
+            "input": str(file.resolve()),
+            "output": str(out_path.resolve()),
+            "algorithm": metadata.algorithm,
+            "kdf": metadata.kdf_algorithm,
+        })
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        output_error(str(e))
+
+
+@app.command()
+def decrypt(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to encrypted file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        )
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--output", "-o",
+            help="Output path (default: removes .enc extension)",
+        )
+    ] = None,
+    password: Annotated[
+        Optional[str],
+        typer.Option(
+            "--password", "-p",
+            help="Decryption password (prompted if not provided)",
+        )
+    ] = None,
+) -> None:
+    """Decrypt a file encrypted with Filanti.
+
+    Verifies integrity before writing output.
+    """
+    try:
+        # Prompt for password if not provided
+        if password is None:
+            password = typer.prompt("Password", hide_input=True)
+
+        # Determine output path
+        if output is None:
+            file_str = str(file)
+            if file_str.endswith(".enc"):
+                out_path = Path(file_str[:-4])
+            else:
+                out_path = Path(file_str + ".dec")
+        else:
+            out_path = output
+
+        # Decrypt
+        size = decrypt_file_with_password(
+            input_path=file,
+            output_path=out_path,
+            password=password,
+        )
+
+        output_json({
+            "success": True,
+            "input": str(file.resolve()),
+            "output": str(out_path.resolve()),
+            "size": size,
+        })
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        output_error(str(e))
+
+
+@app.command()
+def info(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to encrypted file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        )
+    ],
+) -> None:
+    """Show metadata from an encrypted file."""
+    try:
+        metadata = get_file_metadata(file)
+
+        output_json({
+            "success": True,
+            "file": str(file.resolve()),
+            "version": metadata.version,
+            "algorithm": metadata.algorithm,
+            "kdf_algorithm": metadata.kdf_algorithm,
+            "original_size": metadata.original_size,
+        })
+
+    except Exception as e:
+        output_error(str(e))
 
 
 def main() -> None:
