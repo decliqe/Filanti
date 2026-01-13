@@ -183,3 +183,65 @@ class KeyError(FilantiError):
         super().__init__(message, ctx)
         self.key_type = key_type
 
+
+class IntegrityError(FilantiError):
+    """Error during integrity verification (HMAC, checksum)."""
+
+    def __init__(
+        self,
+        message: str,
+        algorithm: str | None = None,
+        expected: str | None = None,
+        actual: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize IntegrityError.
+
+        Args:
+            message: Human-readable error message.
+            algorithm: Name of the integrity algorithm.
+            expected: Expected integrity value.
+            actual: Actual integrity value found.
+            context: Optional dictionary with additional error context.
+        """
+        ctx = context or {}
+        if algorithm:
+            ctx["algorithm"] = algorithm
+        if expected:
+            ctx["expected"] = expected
+        if actual:
+            ctx["actual"] = actual
+        super().__init__(message, ctx)
+        self.algorithm = algorithm
+        self.expected = expected
+        self.actual = actual
+
+
+class SignatureError(FilantiError):
+    """Error during digital signature operations."""
+
+    def __init__(
+        self,
+        message: str,
+        algorithm: str | None = None,
+        operation: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize SignatureError.
+
+        Args:
+            message: Human-readable error message.
+            algorithm: Name of the signature algorithm.
+            operation: Operation that failed (sign, verify).
+            context: Optional dictionary with additional error context.
+        """
+        ctx = context or {}
+        if algorithm:
+            ctx["algorithm"] = algorithm
+        if operation:
+            ctx["operation"] = operation
+        super().__init__(message, ctx)
+        self.algorithm = algorithm
+        self.operation = operation
+
+
