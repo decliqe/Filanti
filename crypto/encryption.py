@@ -56,6 +56,77 @@ class EncryptedData:
     kdf_algorithm: str | None = None
     kdf_params: dict | None = None
 
+    def to_bytes(self) -> bytes:
+        """Serialize encrypted data to bytes for storage/transmission.
+
+        Format for password-based encryption:
+        - 4 bytes: salt length (big-endian)
+        - N bytes: salt
+        - 4 bytes: nonce length (big-endian)
+        - N bytes: nonce
+        - 4 bytes: metadata JSON length (big-endian)
+        - N bytes: metadata JSON (algorithm, kdf_algorithm, kdf_params)
+        - Remaining: ciphertext
+        """
+        meta = {
+            "algorithm": self.algorithm,
+            "kdf_algorithm": self.kdf_algorithm,
+            "kdf_params": self.kdf_params,
+        }
+        meta_bytes = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+
+        parts = []
+        # Salt (may be None for raw key encryption)
+        salt = self.salt or b""
+        parts.append(len(salt).to_bytes(4, "big"))
+        parts.append(salt)
+        # Nonce
+        parts.append(len(self.nonce).to_bytes(4, "big"))
+        parts.append(self.nonce)
+        # Metadata
+        parts.append(len(meta_bytes).to_bytes(4, "big"))
+        parts.append(meta_bytes)
+        # Ciphertext
+        parts.append(self.ciphertext)
+
+        return b"".join(parts)
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "EncryptedData":
+        """Deserialize encrypted data from bytes."""
+        offset = 0
+
+        # Salt
+        salt_len = int.from_bytes(data[offset:offset+4], "big")
+        offset += 4
+        salt = data[offset:offset+salt_len] if salt_len > 0 else None
+        offset += salt_len
+
+        # Nonce
+        nonce_len = int.from_bytes(data[offset:offset+4], "big")
+        offset += 4
+        nonce = data[offset:offset+nonce_len]
+        offset += nonce_len
+
+        # Metadata
+        meta_len = int.from_bytes(data[offset:offset+4], "big")
+        offset += 4
+        meta_bytes = data[offset:offset+meta_len]
+        meta = json.loads(meta_bytes.decode("utf-8"))
+        offset += meta_len
+
+        # Ciphertext
+        ciphertext = data[offset:]
+
+        return cls(
+            ciphertext=ciphertext,
+            nonce=nonce,
+            algorithm=meta["algorithm"],
+            salt=salt,
+            kdf_algorithm=meta.get("kdf_algorithm"),
+            kdf_params=meta.get("kdf_params"),
+        )
+
 
 @dataclass
 class EncryptionMetadata:
