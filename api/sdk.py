@@ -1,0 +1,746 @@
+"""
+Filanti SDK - High-level Python API.
+
+Provides a unified, easy-to-use interface for all Filanti operations.
+This is the recommended way to integrate Filanti into Python applications.
+
+Example:
+    from filanti.api import Filanti
+
+    # Hash a file
+    result = Filanti.hash_file("document.pdf")
+
+    # Encrypt with password
+    Filanti.encrypt("secret.txt", password="my-password")
+
+    # Sign a file
+    keypair = Filanti.generate_keypair()
+    Filanti.sign("document.pdf", private_key=keypair.private_key)
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO
+
+# Hashing
+from filanti.hashing.crypto_hash import (
+    HashAlgorithm,
+    hash_bytes,
+    hash_file,
+    hash_stream,
+    verify_hash,
+    verify_file_hash,
+    get_supported_algorithms as get_hash_algorithms,
+)
+
+# Encryption
+from filanti.crypto import (
+    EncryptionAlgorithm,
+    EncryptedData,
+)
+from filanti.crypto import encrypt_bytes as _encrypt_bytes
+from filanti.crypto import decrypt_bytes as _decrypt_bytes
+from filanti.crypto import encrypt_bytes_with_password as _encrypt_bytes_with_password
+from filanti.crypto import decrypt_bytes_with_password as _decrypt_bytes_with_password
+from filanti.crypto import (
+    encrypt_file,
+    decrypt_file,
+    encrypt_file_with_password,
+    decrypt_file_with_password,
+    get_file_metadata,
+)
+
+from filanti.crypto.key_management import (
+    generate_key,
+    generate_nonce,
+    split_key,
+    derive_subkey,
+    KEY_SIZE_128,
+    KEY_SIZE_256,
+    KEY_SIZE_512,
+)
+
+from filanti.crypto.kdf import (
+    KDFAlgorithm,
+    derive_key,
+    derive_key_with_salt,
+    generate_salt,
+)
+
+# Integrity
+from filanti.integrity.mac import (
+    MACAlgorithm,
+    MACResult,
+    IntegrityMetadata,
+    compute_mac,
+    verify_mac,
+    compute_file_mac,
+    verify_file_mac,
+    create_integrity_file,
+    verify_integrity_file,
+)
+
+from filanti.integrity.signature import (
+    SignatureAlgorithm,
+    KeyPair,
+    SignatureResult,
+    SignatureMetadata,
+    generate_keypair,
+    save_keypair,
+    load_private_key,
+    load_public_key,
+    sign_bytes,
+    verify_signature,
+    sign_file,
+    verify_file_signature,
+    create_signature_file,
+    verify_signature_file,
+)
+
+from filanti.integrity.checksum import (
+    ChecksumAlgorithm,
+    ChecksumResult,
+    ChecksumMetadata,
+    compute_checksum,
+    verify_checksum,
+    compute_file_checksum,
+    verify_file_checksum,
+    create_checksum_file,
+    verify_checksum_file,
+)
+
+# Errors
+from filanti.core.errors import (
+    FilantiError,
+    FileOperationError,
+    HashingError,
+    ValidationError,
+    EncryptionError,
+    DecryptionError,
+    IntegrityError,
+    SignatureError,
+)
+
+
+@dataclass
+class HashResult:
+    """Result of a hash operation."""
+    hash: str
+    algorithm: str
+    file: str | None = None
+
+
+@dataclass
+class EncryptResult:
+    """Result of an encryption operation."""
+    output_path: Path
+    algorithm: str
+    kdf_algorithm: str | None = None
+
+
+@dataclass
+class DecryptResult:
+    """Result of a decryption operation."""
+    output_path: Path
+    size: int
+
+
+@dataclass
+class SignResult:
+    """Result of a signing operation."""
+    signature: bytes
+    signature_hex: str
+    algorithm: str
+    signature_file: Path | None = None
+
+
+@dataclass
+class VerifyResult:
+    """Result of a verification operation."""
+    valid: bool
+    algorithm: str
+    file: str
+
+
+class Filanti:
+    """High-level API for Filanti operations.
+
+    All methods are static for convenience. For more control,
+    use the underlying modules directly.
+    """
+
+    # =========================================================================
+    # HASHING
+    # =========================================================================
+
+    @staticmethod
+    def hash(
+        data: bytes,
+        algorithm: str = "sha256",
+    ) -> HashResult:
+        """Hash bytes data.
+
+        Args:
+            data: Bytes to hash.
+            algorithm: Hash algorithm (sha256, sha512, blake2b, etc.)
+
+        Returns:
+            HashResult with the computed hash.
+        """
+        digest = hash_bytes(data, algorithm)
+        return HashResult(hash=digest, algorithm=algorithm)
+
+    @staticmethod
+    def hash_file(
+        path: str | Path,
+        algorithm: str = "sha256",
+    ) -> HashResult:
+        """Hash a file.
+
+        Args:
+            path: Path to file.
+            algorithm: Hash algorithm.
+
+        Returns:
+            HashResult with the computed hash.
+        """
+        digest = hash_file(str(path), algorithm)
+        return HashResult(hash=digest, algorithm=algorithm, file=str(path))
+
+    @staticmethod
+    def verify_hash(
+        data: bytes,
+        expected: str,
+        algorithm: str = "sha256",
+    ) -> VerifyResult:
+        """Verify hash of bytes.
+
+        Args:
+            data: Data to verify.
+            expected: Expected hash (hex).
+            algorithm: Hash algorithm.
+
+        Returns:
+            VerifyResult indicating if hash matches.
+        """
+        try:
+            valid = verify_hash(data, expected, algorithm)
+            return VerifyResult(valid=valid, algorithm=algorithm, file="<bytes>")
+        except ValidationError:
+            return VerifyResult(valid=False, algorithm=algorithm, file="<bytes>")
+
+    @staticmethod
+    def verify_file_hash(
+        path: str | Path,
+        expected: str,
+        algorithm: str = "sha256",
+    ) -> VerifyResult:
+        """Verify hash of a file.
+
+        Args:
+            path: Path to file.
+            expected: Expected hash (hex).
+            algorithm: Hash algorithm.
+
+        Returns:
+            VerifyResult indicating if hash matches.
+        """
+        try:
+            valid = verify_file_hash(str(path), expected, algorithm)
+            return VerifyResult(valid=valid, algorithm=algorithm, file=str(path))
+        except ValidationError:
+            return VerifyResult(valid=False, algorithm=algorithm, file=str(path))
+
+    # =========================================================================
+    # ENCRYPTION
+    # =========================================================================
+
+    @staticmethod
+    def encrypt(
+        path: str | Path,
+        password: str | None = None,
+        key: bytes | None = None,
+        output: str | Path | None = None,
+        algorithm: str = "aes-256-gcm",
+    ) -> EncryptResult:
+        """Encrypt a file.
+
+        Provide either password OR key, not both.
+
+        Args:
+            path: Path to file to encrypt.
+            password: Password for key derivation.
+            key: Raw encryption key (32 bytes for AES-256).
+            output: Output path (default: path + .enc).
+            algorithm: Encryption algorithm.
+
+        Returns:
+            EncryptResult with output path and metadata.
+        """
+        path = Path(path)
+        out_path = Path(output) if output else path.with_suffix(path.suffix + ".enc")
+        alg = EncryptionAlgorithm(algorithm.lower())
+
+        if password:
+            metadata = encrypt_file_with_password(path, out_path, password, alg)
+            return EncryptResult(
+                output_path=out_path,
+                algorithm=metadata.algorithm,
+                kdf_algorithm=metadata.kdf_algorithm,
+            )
+        elif key:
+            encrypt_file(path, out_path, key, alg)
+            return EncryptResult(output_path=out_path, algorithm=algorithm)
+        else:
+            raise ValueError("Must provide either password or key")
+
+    @staticmethod
+    def decrypt(
+        path: str | Path,
+        password: str | None = None,
+        key: bytes | None = None,
+        output: str | Path | None = None,
+    ) -> DecryptResult:
+        """Decrypt a file.
+
+        Provide either password OR key, not both.
+
+        Args:
+            path: Path to encrypted file.
+            password: Password used for encryption.
+            key: Raw encryption key.
+            output: Output path (default: removes .enc extension).
+
+        Returns:
+            DecryptResult with output path and size.
+        """
+        path = Path(path)
+        if output:
+            out_path = Path(output)
+        elif str(path).endswith(".enc"):
+            out_path = Path(str(path)[:-4])
+        else:
+            out_path = path.with_suffix(".dec")
+
+        if password:
+            size = decrypt_file_with_password(path, out_path, password)
+        elif key:
+            size = decrypt_file(path, out_path, key)
+        else:
+            raise ValueError("Must provide either password or key")
+
+        return DecryptResult(output_path=out_path, size=size)
+
+    @staticmethod
+    def encrypt_bytes(
+        data: bytes,
+        password: str | None = None,
+        key: bytes | None = None,
+        algorithm: str = "aes-256-gcm",
+    ) -> bytes:
+        """Encrypt bytes data.
+
+        Args:
+            data: Data to encrypt.
+            password: Password for key derivation.
+            key: Raw encryption key.
+            algorithm: Encryption algorithm.
+
+        Returns:
+            Encrypted bytes (includes nonce and auth tag).
+        """
+        alg = EncryptionAlgorithm(algorithm.lower())
+
+        if password:
+            result = _encrypt_bytes_with_password(data, password, alg)
+            return result.to_bytes()
+        elif key:
+            result = _encrypt_bytes(data, key, alg)
+            # Return nonce + ciphertext for raw key encryption
+            return result.nonce + result.ciphertext
+        else:
+            raise ValueError("Must provide either password or key")
+
+    @staticmethod
+    def decrypt_bytes(
+        data: bytes,
+        password: str | None = None,
+        key: bytes | None = None,
+    ) -> bytes:
+        """Decrypt bytes data.
+
+        Args:
+            data: Encrypted data.
+            password: Password used for encryption.
+            key: Raw encryption key.
+
+        Returns:
+            Decrypted bytes.
+        """
+        if password:
+            # Parse the encrypted data from bytes
+            encrypted = EncryptedData.from_bytes(data)
+            return _decrypt_bytes_with_password(encrypted, password)
+        elif key:
+            # For raw key, data is nonce (12 bytes) + ciphertext
+            nonce = data[:12]
+            ciphertext = data[12:]
+            encrypted = EncryptedData(
+                ciphertext=ciphertext,
+                nonce=nonce,
+                algorithm="aes-256-gcm"
+            )
+            return _decrypt_bytes(encrypted, key)
+        else:
+            raise ValueError("Must provide either password or key")
+
+    # =========================================================================
+    # INTEGRITY (MAC)
+    # =========================================================================
+
+    @staticmethod
+    def mac(
+        data: bytes,
+        key: bytes,
+        algorithm: str = "hmac-sha256",
+    ) -> MACResult:
+        """Compute HMAC of bytes.
+
+        Args:
+            data: Data to authenticate.
+            key: Secret key.
+            algorithm: MAC algorithm.
+
+        Returns:
+            MACResult with the computed MAC.
+        """
+        return compute_mac(data, key, algorithm)
+
+    @staticmethod
+    def mac_file(
+        path: str | Path,
+        key: bytes,
+        algorithm: str = "hmac-sha256",
+        create_file: bool = False,
+    ) -> MACResult | Path:
+        """Compute HMAC of a file.
+
+        Args:
+            path: Path to file.
+            key: Secret key.
+            algorithm: MAC algorithm.
+            create_file: If True, create detached .mac file.
+
+        Returns:
+            MACResult or Path to .mac file if create_file=True.
+        """
+        if create_file:
+            return create_integrity_file(path, key, algorithm)
+        return compute_file_mac(path, key, algorithm)
+
+    @staticmethod
+    def verify_mac(
+        data: bytes,
+        mac_value: bytes,
+        key: bytes,
+        algorithm: str = "hmac-sha256",
+    ) -> bool:
+        """Verify HMAC of bytes.
+
+        Args:
+            data: Data to verify.
+            mac_value: Expected MAC.
+            key: Secret key.
+            algorithm: MAC algorithm.
+
+        Returns:
+            True if MAC is valid.
+
+        Raises:
+            IntegrityError: If MAC is invalid.
+        """
+        return verify_mac(data, mac_value, key, algorithm)
+
+    @staticmethod
+    def verify_mac_file(
+        path: str | Path,
+        key: bytes,
+        mac_value: bytes | None = None,
+        mac_file: str | Path | None = None,
+    ) -> bool:
+        """Verify HMAC of a file.
+
+        Args:
+            path: Path to file.
+            key: Secret key.
+            mac_value: Expected MAC (if not using mac_file).
+            mac_file: Path to .mac metadata file.
+
+        Returns:
+            True if MAC is valid.
+        """
+        if mac_file is not None or mac_value is None:
+            return verify_integrity_file(path, key, mac_file)
+        return verify_file_mac(path, mac_value, key)
+
+    # =========================================================================
+    # SIGNATURES
+    # =========================================================================
+
+    @staticmethod
+    def generate_keypair(
+        algorithm: str = "ed25519",
+        password: str | bytes | None = None,
+    ) -> KeyPair:
+        """Generate a new signing key pair.
+
+        Args:
+            algorithm: Signature algorithm (ed25519, ecdsa-p256, etc.)
+            password: Optional password to protect private key.
+
+        Returns:
+            KeyPair with PEM-encoded private and public keys.
+        """
+        if isinstance(password, str):
+            password = password.encode("utf-8")
+        return generate_keypair(algorithm, password)
+
+    @staticmethod
+    def sign(
+        data: bytes,
+        private_key: bytes,
+        algorithm: str = "ed25519",
+        password: str | bytes | None = None,
+    ) -> SignatureResult:
+        """Sign bytes data.
+
+        Args:
+            data: Data to sign.
+            private_key: PEM-encoded private key.
+            algorithm: Signature algorithm.
+            password: Password if private key is encrypted.
+
+        Returns:
+            SignatureResult with the signature.
+        """
+        if isinstance(password, str):
+            password = password.encode("utf-8")
+        return sign_bytes(data, private_key, algorithm, password)
+
+    @staticmethod
+    def sign_file(
+        path: str | Path,
+        private_key: bytes,
+        algorithm: str = "ed25519",
+        password: str | bytes | None = None,
+        create_file: bool = False,
+        embed_public_key: bool = True,
+    ) -> SignatureResult | Path:
+        """Sign a file.
+
+        Args:
+            path: Path to file.
+            private_key: PEM-encoded private key.
+            algorithm: Signature algorithm.
+            password: Password if private key is encrypted.
+            create_file: If True, create detached .sig file.
+            embed_public_key: Include public key in signature file.
+
+        Returns:
+            SignatureResult or Path to .sig file if create_file=True.
+        """
+        if isinstance(password, str):
+            password = password.encode("utf-8")
+
+        if create_file:
+            return create_signature_file(
+                path, private_key, algorithm, password,
+                include_public_key=embed_public_key,
+            )
+        return sign_file(path, private_key, algorithm, password)
+
+    @staticmethod
+    def verify_signature(
+        data: bytes,
+        signature: bytes,
+        public_key: bytes,
+        algorithm: str = "ed25519",
+    ) -> bool:
+        """Verify signature of bytes.
+
+        Args:
+            data: Original data.
+            signature: Signature to verify.
+            public_key: PEM-encoded public key.
+            algorithm: Signature algorithm.
+
+        Returns:
+            True if signature is valid.
+
+        Raises:
+            SignatureError: If signature is invalid.
+        """
+        return verify_signature(data, signature, public_key, algorithm)
+
+    @staticmethod
+    def verify_signature_file(
+        path: str | Path,
+        signature_file: str | Path | None = None,
+        public_key: bytes | None = None,
+    ) -> bool:
+        """Verify signature of a file.
+
+        Args:
+            path: Path to file.
+            signature_file: Path to .sig file (default: path + .sig).
+            public_key: PEM-encoded public key (uses embedded if not provided).
+
+        Returns:
+            True if signature is valid.
+        """
+        return verify_signature_file(path, signature_file, public_key)
+
+    # =========================================================================
+    # CHECKSUM
+    # =========================================================================
+
+    @staticmethod
+    def checksum(
+        data: bytes,
+        algorithm: str = "crc32",
+    ) -> ChecksumResult:
+        """Compute checksum of bytes.
+
+        Note: Checksums are NOT cryptographically secure.
+        Use for detecting accidental corruption only.
+
+        Args:
+            data: Data to checksum.
+            algorithm: Checksum algorithm (crc32, adler32, xxhash64).
+
+        Returns:
+            ChecksumResult with the computed checksum.
+        """
+        return compute_checksum(data, algorithm)
+
+    @staticmethod
+    def checksum_file(
+        path: str | Path,
+        algorithm: str = "crc32",
+        create_file: bool = False,
+    ) -> ChecksumResult | Path:
+        """Compute checksum of a file.
+
+        Args:
+            path: Path to file.
+            algorithm: Checksum algorithm.
+            create_file: If True, create detached .checksum file.
+
+        Returns:
+            ChecksumResult or Path to .checksum file if create_file=True.
+        """
+        if create_file:
+            return create_checksum_file(path, algorithm)
+        return compute_file_checksum(path, algorithm)
+
+    @staticmethod
+    def verify_checksum(
+        data: bytes,
+        expected: int,
+        algorithm: str = "crc32",
+    ) -> bool:
+        """Verify checksum of bytes.
+
+        Args:
+            data: Data to verify.
+            expected: Expected checksum value.
+            algorithm: Checksum algorithm.
+
+        Returns:
+            True if checksum matches.
+
+        Raises:
+            IntegrityError: If checksum doesn't match.
+        """
+        return verify_checksum(data, expected, algorithm)
+
+    @staticmethod
+    def verify_checksum_file(
+        path: str | Path,
+        expected: int | None = None,
+        checksum_file: str | Path | None = None,
+        algorithm: str = "crc32",
+    ) -> bool:
+        """Verify checksum of a file.
+
+        Args:
+            path: Path to file.
+            expected: Expected checksum (if not using checksum_file).
+            checksum_file: Path to .checksum metadata file.
+            algorithm: Checksum algorithm.
+
+        Returns:
+            True if checksum matches.
+        """
+        if checksum_file is not None or expected is None:
+            return verify_checksum_file(path, checksum_file)
+        return verify_file_checksum(path, expected, algorithm)
+
+    # =========================================================================
+    # KEY MANAGEMENT
+    # =========================================================================
+
+    @staticmethod
+    def generate_key(size: int = 32) -> bytes:
+        """Generate a random encryption key.
+
+        Args:
+            size: Key size in bytes (16, 32, or 64).
+
+        Returns:
+            Random key bytes.
+        """
+        return generate_key(size)
+
+    @staticmethod
+    def derive_key(
+        password: str,
+        salt: bytes | None = None,
+        algorithm: str = "argon2id",
+    ) -> tuple[bytes, bytes]:
+        """Derive encryption key from password.
+
+        Args:
+            password: Password to derive key from.
+            salt: Salt bytes (generated if not provided).
+            algorithm: KDF algorithm (argon2id, scrypt).
+
+        Returns:
+            Tuple of (derived_key, salt).
+        """
+        from filanti.crypto.kdf import KDFParams, derive_key as kdf_derive_key
+
+        params = KDFParams(algorithm=KDFAlgorithm(algorithm))
+        result = kdf_derive_key(password, salt=salt, params=params)
+        return result.key, result.salt
+
+    # =========================================================================
+    # UTILITY
+    # =========================================================================
+
+    @staticmethod
+    def algorithms() -> dict:
+        """Get all supported algorithms.
+
+        Returns:
+            Dictionary of algorithm categories and their supported values.
+        """
+        return {
+            "hash": get_hash_algorithms(),
+            "encryption": [e.value for e in EncryptionAlgorithm],
+            "mac": [m.value for m in MACAlgorithm],
+            "signature": [s.value for s in SignatureAlgorithm],
+            "checksum": [c.value for c in ChecksumAlgorithm],
+            "kdf": [k.value for k in KDFAlgorithm],
+        }
+
