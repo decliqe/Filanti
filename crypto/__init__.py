@@ -29,6 +29,14 @@ from filanti.crypto.key_management import (
     split_key,
     derive_subkey,
 )
+from filanti.crypto.streaming import (
+    encrypt_stream,
+    decrypt_stream,
+    encrypt_file_streaming,
+    decrypt_file_streaming,
+    encrypt_file_streaming_with_password,
+    decrypt_file_streaming_with_password,
+)
 
 __all__ = [
     # Encryption
@@ -45,6 +53,13 @@ __all__ = [
     "decrypt_file",
     "decrypt_file_with_password",
     "get_file_metadata",
+    # Streaming
+    "encrypt_stream",
+    "decrypt_stream",
+    "encrypt_file_streaming",
+    "decrypt_file_streaming",
+    "encrypt_file_streaming_with_password",
+    "decrypt_file_streaming_with_password",
     # KDF
     "KDFAlgorithm",
     "KDFParams",

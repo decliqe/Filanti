@@ -351,10 +351,10 @@ class Filanti:
         """
         alg = EncryptionAlgorithm(algorithm.lower())
 
-        if password:
+        if password is not None:
             result = _encrypt_bytes_with_password(data, password, alg)
             return result.to_bytes()
-        elif key:
+        elif key is not None:
             result = _encrypt_bytes(data, key, alg)
             # Return nonce + ciphertext for raw key encryption
             return result.nonce + result.ciphertext
@@ -377,11 +377,11 @@ class Filanti:
         Returns:
             Decrypted bytes.
         """
-        if password:
+        if password is not None:
             # Parse the encrypted data from bytes
             encrypted = EncryptedData.from_bytes(data)
             return _decrypt_bytes_with_password(encrypted, password)
-        elif key:
+        elif key is not None:
             # For raw key, data is nonce (12 bytes) + ciphertext
             nonce = data[:12]
             ciphertext = data[12:]
