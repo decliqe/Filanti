@@ -3,6 +3,9 @@ Filanti CLI - Command Line Interface.
 
 Provides command-line access to Filanti's file security operations.
 Outputs are JSON by default for automation and scripting.
+
+Supports ENV-based secret resolution:
+    filanti encrypt file.txt --password ENV:MY_PASSWORD
 """
 
 import json
@@ -42,6 +45,13 @@ from filanti.integrity import (
     create_checksum_file,
     verify_checksum_file,
 )
+from filanti.core.secrets import (
+    resolve_secret,
+    is_env_reference,
+    redact_secret,
+    REDACTED_PLACEHOLDER,
+)
+from filanti.core.errors import SecretError
 
 
 # Create main CLI app
@@ -191,7 +201,7 @@ def encrypt(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Encryption password (prompted if not provided)",
+            help="Encryption password (prompted if not provided). Supports ENV:VAR_NAME syntax.",
         )
     ] = None,
     algorithm: Annotated[
@@ -205,14 +215,27 @@ def encrypt(
     """Encrypt a file with password-based encryption.
 
     Uses Argon2id for key derivation and authenticated encryption.
+
+    Supports ENV-based secret resolution:
+        filanti encrypt file.txt --password ENV:MY_PASSWORD
     """
     try:
+        # Resolve password from ENV if needed
+        resolved_password = None
+        if password is not None:
+            try:
+                resolved_password = resolve_secret(password)
+            except SecretError as e:
+                output_error(str(e))
+                return  # Never reached, but satisfies static analysis
+
         # Prompt for password if not provided
-        if password is None:
-            password = typer.prompt("Password", hide_input=True)
+        if resolved_password is None:
+            resolved_password = typer.prompt("Password", hide_input=True)
             confirm = typer.prompt("Confirm password", hide_input=True)
-            if password != confirm:
+            if resolved_password != confirm:
                 output_error("Passwords do not match")
+                return
 
         # Determine output path
         out_path = output or Path(str(file) + ".enc")
@@ -222,12 +245,13 @@ def encrypt(
             enc_alg = EncryptionAlgorithm(algorithm.lower())
         except ValueError:
             output_error(f"Unsupported algorithm: {algorithm}")
+            return
 
         # Encrypt
         metadata = encrypt_file_with_password(
             input_path=file,
             output_path=out_path,
-            password=password,
+            password=resolved_password,
             algorithm=enc_alg,
         )
 
@@ -268,18 +292,29 @@ def decrypt(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Decryption password (prompted if not provided)",
+            help="Decryption password (prompted if not provided). Supports ENV:VAR_NAME syntax.",
         )
     ] = None,
 ) -> None:
     """Decrypt a file encrypted with Filanti.
 
     Verifies integrity before writing output.
+
+    Supports ENV-based secret resolution:
+        filanti decrypt file.enc --password ENV:MY_PASSWORD
     """
     try:
+        # Resolve password from ENV if needed
+        resolved_password = None
+        if password is not None:
+            try:
+                resolved_password = resolve_secret(password)
+            except SecretError as e:
+                output_error(str(e))
+
         # Prompt for password if not provided
-        if password is None:
-            password = typer.prompt("Password", hide_input=True)
+        if resolved_password is None:
+            resolved_password = typer.prompt("Password", hide_input=True)
 
         # Determine output path
         if output is None:
@@ -295,7 +330,7 @@ def decrypt(
         size = decrypt_file_with_password(
             input_path=file,
             output_path=out_path,
-            password=password,
+            password=resolved_password,
         )
 
         output_json({
@@ -362,7 +397,7 @@ def mac(
         str,
         typer.Option(
             "--key", "-k",
-            help="Secret key for HMAC (hex or text)",
+            help="Secret key for HMAC (hex or text). Supports ENV:VAR_NAME syntax.",
         )
     ],
     algorithm: Annotated[
@@ -390,13 +425,23 @@ def mac(
     """Compute HMAC of a file for integrity verification.
 
     Supported algorithms: hmac-sha256, hmac-sha384, hmac-sha512, hmac-sha3-256, hmac-blake2b
+
+    Supports ENV-based secret resolution:
+        filanti mac file.txt --key ENV:HMAC_KEY
     """
     try:
+        # Resolve key from ENV if needed
+        try:
+            resolved_key = resolve_secret(key)
+        except SecretError as e:
+            output_error(str(e))
+            return  # Never reached, but satisfies static analysis
+
         # Parse key - try hex first, then treat as text
         try:
-            key_bytes = bytes.fromhex(key)
+            key_bytes = bytes.fromhex(resolved_key)
         except ValueError:
-            key_bytes = key.encode("utf-8")
+            key_bytes = resolved_key.encode("utf-8")
 
         if create_file or output:
             # Create detached integrity file
@@ -443,7 +488,7 @@ def verify_mac_cmd(
         str,
         typer.Option(
             "--key", "-k",
-            help="Secret key for HMAC (hex or text)",
+            help="Secret key for HMAC (hex or text). Supports ENV:VAR_NAME syntax.",
         )
     ],
     expected: Annotated[
@@ -464,13 +509,23 @@ def verify_mac_cmd(
     """Verify file integrity using HMAC.
 
     Either provide --expected MAC value or --mac-file with detached metadata.
+
+    Supports ENV-based secret resolution:
+        filanti verify-mac file.txt --key ENV:HMAC_KEY
     """
     try:
+        # Resolve key from ENV if needed
+        try:
+            resolved_key = resolve_secret(key)
+        except SecretError as e:
+            output_error(str(e))
+            return  # Never reached, but satisfies static analysis
+
         # Parse key
         try:
-            key_bytes = bytes.fromhex(key)
+            key_bytes = bytes.fromhex(resolved_key)
         except ValueError:
-            key_bytes = key.encode("utf-8")
+            key_bytes = resolved_key.encode("utf-8")
 
         if mac_file or (not expected):
             # Verify using metadata file
@@ -520,7 +575,7 @@ def keygen(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Password to protect private key (prompted if --protect is set)",
+            help="Password to protect private key. Supports ENV:VAR_NAME syntax.",
         )
     ] = None,
     protect: Annotated[
@@ -534,16 +589,27 @@ def keygen(
     """Generate a new signing key pair.
 
     Creates private key at OUTPUT and public key at OUTPUT.pub
+
+    Supports ENV-based secret resolution:
+        filanti keygen mykey --protect --password ENV:KEY_PASSWORD
     """
     try:
-        # Handle password
-        if protect and password is None:
-            password = typer.prompt("Password", hide_input=True)
+        # Resolve password from ENV if needed
+        resolved_password = None
+        if password is not None:
+            try:
+                resolved_password = resolve_secret(password)
+            except SecretError as e:
+                output_error(str(e))
+
+        # Handle password - prompt if protect is set but no password provided
+        if protect and resolved_password is None:
+            resolved_password = typer.prompt("Password", hide_input=True)
             confirm = typer.prompt("Confirm password", hide_input=True)
-            if password != confirm:
+            if resolved_password != confirm:
                 output_error("Passwords do not match")
 
-        password_bytes = password.encode("utf-8") if password else None
+        password_bytes = resolved_password.encode("utf-8") if resolved_password else None
 
         # Generate keypair
         keypair = generate_keypair(algorithm, password_bytes)
@@ -556,7 +622,7 @@ def keygen(
             "algorithm": keypair.algorithm,
             "private_key": str(priv_path.resolve()),
             "public_key": str(pub_path.resolve()),
-            "encrypted": protect,
+            "encrypted": protect or (resolved_password is not None),
         })
 
     except Exception as e:
@@ -601,7 +667,7 @@ def sign(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Password for encrypted private key",
+            help="Password for encrypted private key. Supports ENV:VAR_NAME syntax.",
         )
     ] = None,
     embed_key: Annotated[
@@ -615,11 +681,22 @@ def sign(
     """Sign a file with a private key.
 
     Creates a detached signature file (.sig) containing the signature and metadata.
+
+    Supports ENV-based secret resolution:
+        filanti sign file.txt --key mykey --password ENV:KEY_PASSWORD
     """
     try:
+        # Resolve password from ENV if needed
+        resolved_password = None
+        if password is not None:
+            try:
+                resolved_password = resolve_secret(password)
+            except SecretError as e:
+                output_error(str(e))
+
         # Read private key
         private_key = key.read_bytes()
-        password_bytes = password.encode("utf-8") if password else None
+        password_bytes = resolved_password.encode("utf-8") if resolved_password else None
 
         # Create signature file
         sig_path = create_signature_file(

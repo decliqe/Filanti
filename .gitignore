@@ -1,0 +1,7 @@
+#bytecode
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+
+*.env
