@@ -119,6 +119,18 @@ from filanti.core.errors import (
     DecryptionError,
     IntegrityError,
     SignatureError,
+    SecretError,
+)
+
+# Secrets
+from filanti.core.secrets import (
+    resolve_secret,
+    resolve_secret_optional,
+    is_env_reference,
+    redact_secret,
+    redact_secrets,
+    create_safe_json_output,
+    REDACTED_PLACEHOLDER,
 )
 
 
@@ -267,22 +279,30 @@ class Filanti:
 
         Provide either password OR key, not both.
 
+        Supports ENV-based secret resolution for password:
+            Filanti.encrypt("file.txt", password="ENV:MY_PASSWORD")
+
         Args:
             path: Path to file to encrypt.
-            password: Password for key derivation.
+            password: Password for key derivation. Supports ENV:VAR_NAME syntax.
             key: Raw encryption key (32 bytes for AES-256).
             output: Output path (default: path + .enc).
             algorithm: Encryption algorithm.
 
         Returns:
             EncryptResult with output path and metadata.
+
+        Raises:
+            SecretError: If ENV variable is not set or empty.
         """
         path = Path(path)
         out_path = Path(output) if output else path.with_suffix(path.suffix + ".enc")
         alg = EncryptionAlgorithm(algorithm.lower())
 
         if password:
-            metadata = encrypt_file_with_password(path, out_path, password, alg)
+            # Resolve password from ENV if needed
+            resolved_password = resolve_secret(password)
+            metadata = encrypt_file_with_password(path, out_path, resolved_password, alg)
             return EncryptResult(
                 output_path=out_path,
                 algorithm=metadata.algorithm,
@@ -305,14 +325,20 @@ class Filanti:
 
         Provide either password OR key, not both.
 
+        Supports ENV-based secret resolution for password:
+            Filanti.decrypt("file.enc", password="ENV:MY_PASSWORD")
+
         Args:
             path: Path to encrypted file.
-            password: Password used for encryption.
+            password: Password used for encryption. Supports ENV:VAR_NAME syntax.
             key: Raw encryption key.
             output: Output path (default: removes .enc extension).
 
         Returns:
             DecryptResult with output path and size.
+
+        Raises:
+            SecretError: If ENV variable is not set or empty.
         """
         path = Path(path)
         if output:
@@ -323,7 +349,9 @@ class Filanti:
             out_path = path.with_suffix(".dec")
 
         if password:
-            size = decrypt_file_with_password(path, out_path, password)
+            # Resolve password from ENV if needed
+            resolved_password = resolve_secret(password)
+            size = decrypt_file_with_password(path, out_path, resolved_password)
         elif key:
             size = decrypt_file(path, out_path, key)
         else:
@@ -340,19 +368,27 @@ class Filanti:
     ) -> bytes:
         """Encrypt bytes data.
 
+        Supports ENV-based secret resolution for password:
+            Filanti.encrypt_bytes(data, password="ENV:MY_PASSWORD")
+
         Args:
             data: Data to encrypt.
-            password: Password for key derivation.
+            password: Password for key derivation. Supports ENV:VAR_NAME syntax.
             key: Raw encryption key.
             algorithm: Encryption algorithm.
 
         Returns:
             Encrypted bytes (includes nonce and auth tag).
+
+        Raises:
+            SecretError: If ENV variable is not set or empty.
         """
         alg = EncryptionAlgorithm(algorithm.lower())
 
         if password is not None:
-            result = _encrypt_bytes_with_password(data, password, alg)
+            # Resolve password from ENV if needed
+            resolved_password = resolve_secret(password)
+            result = _encrypt_bytes_with_password(data, resolved_password, alg)
             return result.to_bytes()
         elif key is not None:
             result = _encrypt_bytes(data, key, alg)
@@ -369,18 +405,26 @@ class Filanti:
     ) -> bytes:
         """Decrypt bytes data.
 
+        Supports ENV-based secret resolution for password:
+            Filanti.decrypt_bytes(data, password="ENV:MY_PASSWORD")
+
         Args:
             data: Encrypted data.
-            password: Password used for encryption.
+            password: Password used for encryption. Supports ENV:VAR_NAME syntax.
             key: Raw encryption key.
 
         Returns:
             Decrypted bytes.
+
+        Raises:
+            SecretError: If ENV variable is not set or empty.
         """
         if password is not None:
+            # Resolve password from ENV if needed
+            resolved_password = resolve_secret(password)
             # Parse the encrypted data from bytes
             encrypted = EncryptedData.from_bytes(data)
-            return _decrypt_bytes_with_password(encrypted, password)
+            return _decrypt_bytes_with_password(encrypted, resolved_password)
         elif key is not None:
             # For raw key, data is nonce (12 bytes) + ciphertext
             nonce = data[:12]
@@ -743,4 +787,113 @@ class Filanti:
             "checksum": [c.value for c in ChecksumAlgorithm],
             "kdf": [k.value for k in KDFAlgorithm],
         }
+
+    # =========================================================================
+    # SECRETS
+    # =========================================================================
+
+    @staticmethod
+    def resolve_secret(value: str, allow_empty: bool = False) -> str:
+        """Resolve a secret value from ENV variable.
+
+        Supports ENV:VAR_NAME syntax for environment-based secret resolution.
+        Literal strings are returned unchanged.
+
+        Args:
+            value: Secret value or ENV reference (e.g., "ENV:MY_PASSWORD").
+            allow_empty: If False (default), raise error for empty values.
+
+        Returns:
+            The resolved secret value.
+
+        Raises:
+            SecretError: If environment variable is not set or empty.
+
+        Example:
+            # Set environment variable
+            os.environ["MY_PASSWORD"] = "secret123"
+
+            # Resolve it
+            password = Filanti.resolve_secret("ENV:MY_PASSWORD")
+            # Returns: "secret123"
+
+            # Literal values pass through
+            literal = Filanti.resolve_secret("direct-password")
+            # Returns: "direct-password"
+        """
+        return resolve_secret(value, allow_empty)
+
+    @staticmethod
+    def is_env_reference(value: str) -> bool:
+        """Check if a value is an ENV reference.
+
+        Args:
+            value: String to check.
+
+        Returns:
+            True if value matches ENV:VAR_NAME pattern.
+
+        Example:
+            Filanti.is_env_reference("ENV:MY_SECRET")  # True
+            Filanti.is_env_reference("my-password")    # False
+        """
+        return is_env_reference(value)
+
+    @staticmethod
+    def redact_secret(text: str, secret: str) -> str:
+        """Redact a secret from text output.
+
+        Args:
+            text: Text that may contain the secret.
+            secret: Secret value to redact.
+
+        Returns:
+            Text with secret replaced by [REDACTED].
+
+        Example:
+            output = "Password is secret123"
+            safe = Filanti.redact_secret(output, "secret123")
+            # Returns: "Password is [REDACTED]"
+        """
+        return redact_secret(text, secret)
+
+    @staticmethod
+    def redact_secrets(text: str, secrets: list[str]) -> str:
+        """Redact multiple secrets from text output.
+
+        Args:
+            text: Text that may contain secrets.
+            secrets: List of secret values to redact.
+
+        Returns:
+            Text with all secrets replaced by [REDACTED].
+        """
+        return redact_secrets(text, secrets)
+
+    @staticmethod
+    def safe_json_output(
+        data: dict,
+        secrets: list[str] | None = None,
+        secret_keys: list[str] | None = None,
+    ) -> dict:
+        """Create JSON-safe output with secrets redacted.
+
+        Args:
+            data: Dictionary to sanitize.
+            secrets: Secret values to redact from string fields.
+            secret_keys: Dictionary keys whose values should be redacted.
+
+        Returns:
+            Sanitized dictionary safe for logging/output.
+
+        Example:
+            data = {"password": "secret123", "message": "Using secret123"}
+            safe = Filanti.safe_json_output(
+                data,
+                secrets=["secret123"],
+                secret_keys=["password"]
+            )
+            # Returns: {"password": "[REDACTED]", "message": "Using [REDACTED]"}
+        """
+        return create_safe_json_output(data, secrets, secret_keys)
 

@@ -17,6 +17,7 @@ from filanti.core.errors import (
     DecryptionError,
     IntegrityError,
     SignatureError,
+    SecretError,
 )
 
 __all__ = [
@@ -30,5 +31,6 @@ __all__ = [
     "DecryptionError",
     "IntegrityError",
     "SignatureError",
+    "SecretError",
 ]
 

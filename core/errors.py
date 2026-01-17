@@ -245,3 +245,30 @@ class SignatureError(FilantiError):
         self.operation = operation
 
 
+class SecretError(FilantiError):
+    """Error during secret resolution operations.
+
+    Raised when environment-based secrets cannot be resolved,
+    such as when an ENV variable is not set or is empty.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        env_var: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize SecretError.
+
+        Args:
+            message: Human-readable error message.
+            env_var: Name of the environment variable.
+            context: Optional dictionary with additional error context.
+        """
+        ctx = context or {}
+        if env_var:
+            ctx["env_var"] = env_var
+        super().__init__(message, ctx)
+        self.env_var = env_var
+
+
