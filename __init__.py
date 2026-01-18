@@ -5,7 +5,7 @@ Provides secure-by-default primitives for file encryption, hashing,
 and integrity verification.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Decliqe"
 
 from filanti.core.errors import (

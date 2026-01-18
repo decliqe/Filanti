@@ -23,6 +23,15 @@ from filanti.crypto import (
     get_file_metadata,
     EncryptionAlgorithm,
 )
+from filanti.crypto.asymmetric import (
+    AsymmetricAlgorithm,
+    generate_asymmetric_keypair,
+    save_asymmetric_keypair,
+    hybrid_encrypt_file,
+    hybrid_decrypt_file,
+    get_hybrid_file_metadata,
+    get_supported_asymmetric_algorithms,
+)
 from filanti.integrity import (
     # MAC
     MACAlgorithm,
@@ -909,6 +918,327 @@ def verify_checksum_cmd(
 
 
 # =============================================================================
+# ASYMMETRIC / HYBRID ENCRYPTION COMMANDS
+# =============================================================================
+
+
+@app.command(name="keygen-asymmetric")
+def keygen_asymmetric(
+    output: Annotated[
+        Path,
+        typer.Argument(
+            help="Output path for private key (public key will be .pub)",
+        )
+    ],
+    algorithm: Annotated[
+        str,
+        typer.Option(
+            "--algorithm", "-a",
+            help="Key exchange algorithm (x25519, rsa-oaep)",
+        )
+    ] = "x25519",
+    password: Annotated[
+        Optional[str],
+        typer.Option(
+            "--password", "-p",
+            help="Password to protect private key. Supports ENV:VAR_NAME syntax.",
+        )
+    ] = None,
+    protect: Annotated[
+        bool,
+        typer.Option(
+            "--protect",
+            help="Encrypt private key with password",
+        )
+    ] = False,
+    rsa_size: Annotated[
+        int,
+        typer.Option(
+            "--rsa-size",
+            help="RSA key size in bits (only for rsa-oaep)",
+        )
+    ] = 4096,
+) -> None:
+    """Generate asymmetric key pair for hybrid encryption.
+
+    Creates private key at OUTPUT and public key at OUTPUT.pub
+
+    X25519 is recommended for most use cases (fast, secure, compact keys).
+    RSA-OAEP is provided for compatibility.
+
+    Supports ENV-based secret resolution:
+        filanti keygen-asymmetric mykey --protect --password ENV:KEY_PASSWORD
+    """
+    try:
+        # Resolve password from ENV if needed
+        resolved_password = None
+        if password is not None:
+            try:
+                resolved_password = resolve_secret(password)
+            except SecretError as e:
+                output_error(str(e))
+                return
+
+        # Handle password - prompt if protect is set but no password provided
+        if protect and resolved_password is None:
+            resolved_password = typer.prompt("Password", hide_input=True)
+            confirm = typer.prompt("Confirm password", hide_input=True)
+            if resolved_password != confirm:
+                output_error("Passwords do not match")
+                return
+
+        password_bytes = resolved_password.encode("utf-8") if resolved_password else None
+
+        # Generate keypair
+        keypair = generate_asymmetric_keypair(algorithm, password_bytes, rsa_size)
+
+        # Save to files
+        priv_path, pub_path = save_asymmetric_keypair(keypair, output)
+
+        output_json({
+            "success": True,
+            "algorithm": keypair.algorithm,
+            "private_key": str(priv_path.resolve()),
+            "public_key": str(pub_path.resolve()),
+            "encrypted": protect or (resolved_password is not None),
+        })
+
+    except Exception as e:
+        output_error(str(e))
+
+
+@app.command(name="encrypt-pubkey")
+def encrypt_pubkey(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to file to encrypt",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        )
+    ],
+    pubkey: Annotated[
+        list[Path],
+        typer.Option(
+            "--pubkey", "-k",
+            help="Path to recipient public key (can specify multiple)",
+        )
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--output", "-o",
+            help="Output path (default: input.henc)",
+        )
+    ] = None,
+    algorithm: Annotated[
+        str,
+        typer.Option(
+            "--algorithm", "-a",
+            help="Key exchange algorithm (x25519, rsa-oaep)",
+        )
+    ] = "x25519",
+    recipient_id: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--recipient-id", "-r",
+            help="Recipient identifier (one per pubkey, in order)",
+        )
+    ] = None,
+) -> None:
+    """Encrypt a file for specific recipients using public keys.
+
+    Uses hybrid encryption: asymmetric key exchange + symmetric AEAD.
+    Supports multi-recipient encryption - each recipient can decrypt with their private key.
+
+    Examples:
+        # Encrypt for single recipient
+        filanti encrypt-pubkey secret.txt --pubkey alice.pub
+
+        # Encrypt for multiple recipients
+        filanti encrypt-pubkey secret.txt --pubkey alice.pub --pubkey bob.pub
+
+        # With recipient IDs
+        filanti encrypt-pubkey secret.txt --pubkey alice.pub -r alice --pubkey bob.pub -r bob
+    """
+    try:
+        # Validate pubkeys
+        if not pubkey:
+            output_error("At least one --pubkey is required")
+            return
+
+        # Validate recipient IDs count if provided
+        if recipient_id and len(recipient_id) != len(pubkey):
+            output_error("Number of --recipient-id must match number of --pubkey")
+            return
+
+        # Convert paths to strings for the function
+        pubkey_paths = [str(p) for p in pubkey]
+
+        # Determine output path
+        out_path = output or Path(str(file) + ".henc")
+
+        # Parse algorithm
+        try:
+            asym_alg = AsymmetricAlgorithm(algorithm.lower())
+        except ValueError:
+            output_error(f"Unsupported algorithm: {algorithm}")
+            return
+
+        # Encrypt
+        metadata = hybrid_encrypt_file(
+            input_path=file,
+            output_path=out_path,
+            recipient_public_keys=pubkey_paths,
+            algorithm=asym_alg,
+            recipient_ids=recipient_id,
+        )
+
+        output_json({
+            "success": True,
+            "input": str(file.resolve()),
+            "output": str(out_path.resolve()),
+            "asymmetric_algorithm": metadata.asymmetric_algorithm,
+            "symmetric_algorithm": metadata.symmetric_algorithm,
+            "recipient_count": metadata.recipient_count,
+        })
+
+    except Exception as e:
+        output_error(str(e))
+
+
+@app.command(name="decrypt-privkey")
+def decrypt_privkey(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to encrypted file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        )
+    ],
+    privkey: Annotated[
+        Path,
+        typer.Option(
+            "--privkey", "-k",
+            help="Path to private key file",
+            exists=True,
+        )
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--output", "-o",
+            help="Output path (default: removes .henc extension)",
+        )
+    ] = None,
+    password: Annotated[
+        Optional[str],
+        typer.Option(
+            "--password", "-p",
+            help="Password for encrypted private key. Supports ENV:VAR_NAME syntax.",
+        )
+    ] = None,
+    recipient_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--recipient-id", "-r",
+            help="Recipient ID to use for decryption (for multi-recipient files)",
+        )
+    ] = None,
+) -> None:
+    """Decrypt a file encrypted with public key encryption.
+
+    Decrypts files created with 'encrypt-pubkey' command.
+
+    Supports ENV-based secret resolution:
+        filanti decrypt-privkey file.henc --privkey mykey --password ENV:KEY_PASSWORD
+
+    Examples:
+        # Basic decryption
+        filanti decrypt-privkey secret.txt.henc --privkey mykey.pem
+
+        # With encrypted private key
+        filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password mypass
+    """
+    try:
+        # Resolve password from ENV if needed
+        resolved_password = None
+        if password is not None:
+            try:
+                resolved_password = resolve_secret(password)
+            except SecretError as e:
+                output_error(str(e))
+                return
+
+        password_bytes = resolved_password.encode("utf-8") if resolved_password else None
+
+        # Determine output path
+        if output is None:
+            file_str = str(file)
+            if file_str.endswith(".henc"):
+                out_path = Path(file_str[:-5])
+            else:
+                out_path = Path(file_str + ".dec")
+        else:
+            out_path = output
+
+        # Decrypt
+        size = hybrid_decrypt_file(
+            input_path=file,
+            output_path=out_path,
+            private_key=str(privkey),
+            password=password_bytes,
+            recipient_id=recipient_id,
+        )
+
+        output_json({
+            "success": True,
+            "input": str(file.resolve()),
+            "output": str(out_path.resolve()),
+            "size": size,
+        })
+
+    except Exception as e:
+        output_error(str(e))
+
+
+@app.command(name="info-hybrid")
+def info_hybrid(
+    file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to hybrid encrypted file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        )
+    ],
+) -> None:
+    """Show metadata from a hybrid encrypted file."""
+    try:
+        metadata = get_hybrid_file_metadata(file)
+
+        output_json({
+            "success": True,
+            "file": str(file.resolve()),
+            "version": metadata.version,
+            "asymmetric_algorithm": metadata.asymmetric_algorithm,
+            "symmetric_algorithm": metadata.symmetric_algorithm,
+            "recipient_count": metadata.recipient_count,
+            "created_at": metadata.created_at,
+        })
+
+    except Exception as e:
+        output_error(str(e))
+
+
+# =============================================================================
 # SUPPORTED ALGORITHMS
 # =============================================================================
 
@@ -925,6 +1255,10 @@ def list_algorithms() -> None:
         "encryption": {
             "algorithms": [e.value for e in EncryptionAlgorithm],
             "default": "aes-256-gcm",
+        },
+        "asymmetric": {
+            "algorithms": get_supported_asymmetric_algorithms(),
+            "default": "x25519",
         },
         "mac": {
             "algorithms": [m.value for m in MACAlgorithm],

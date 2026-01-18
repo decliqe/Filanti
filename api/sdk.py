@@ -50,6 +50,24 @@ from filanti.crypto import (
     get_file_metadata,
 )
 
+# Asymmetric / Hybrid Encryption
+from filanti.crypto.asymmetric import (
+    AsymmetricAlgorithm,
+    AsymmetricKeyPair,
+    HybridEncryptedData,
+    AsymmetricMetadata,
+    generate_asymmetric_keypair as _generate_asymmetric_keypair,
+    save_asymmetric_keypair as _save_asymmetric_keypair,
+    load_asymmetric_private_key,
+    load_asymmetric_public_key,
+    hybrid_encrypt_bytes as _hybrid_encrypt_bytes,
+    hybrid_decrypt_bytes as _hybrid_decrypt_bytes,
+    hybrid_encrypt_file as _hybrid_encrypt_file,
+    hybrid_decrypt_file as _hybrid_decrypt_file,
+    get_hybrid_file_metadata,
+    get_supported_asymmetric_algorithms,
+)
+
 from filanti.crypto.key_management import (
     generate_key,
     generate_nonce,
@@ -153,6 +171,22 @@ class EncryptResult:
 @dataclass
 class DecryptResult:
     """Result of a decryption operation."""
+    output_path: Path
+    size: int
+
+
+@dataclass
+class HybridEncryptResult:
+    """Result of a hybrid encryption operation."""
+    output_path: Path
+    asymmetric_algorithm: str
+    symmetric_algorithm: str
+    recipient_count: int
+
+
+@dataclass
+class HybridDecryptResult:
+    """Result of a hybrid decryption operation."""
     output_path: Path
     size: int
 
@@ -769,6 +803,240 @@ class Filanti:
         return result.key, result.salt
 
     # =========================================================================
+    # ASYMMETRIC / HYBRID ENCRYPTION
+    # =========================================================================
+
+    @staticmethod
+    def generate_asymmetric_keypair(
+        algorithm: str = "x25519",
+        password: str | bytes | None = None,
+        rsa_key_size: int = 4096,
+    ) -> AsymmetricKeyPair:
+        """Generate asymmetric key pair for hybrid encryption.
+
+        Args:
+            algorithm: Key exchange algorithm (x25519, rsa-oaep).
+            password: Optional password to protect private key.
+            rsa_key_size: RSA key size in bits (only for RSA).
+
+        Returns:
+            AsymmetricKeyPair with PEM-encoded private and public keys.
+
+        Example:
+            # Generate X25519 key pair
+            keypair = Filanti.generate_asymmetric_keypair()
+
+            # Generate RSA key pair with password protection
+            keypair = Filanti.generate_asymmetric_keypair(
+                algorithm="rsa-oaep",
+                password="my-password"
+            )
+        """
+        if isinstance(password, str):
+            password = password.encode("utf-8")
+        return _generate_asymmetric_keypair(algorithm, password, rsa_key_size)
+
+    @staticmethod
+    def save_asymmetric_keypair(
+        keypair: AsymmetricKeyPair,
+        private_key_path: str | Path,
+        public_key_path: str | Path | None = None,
+    ) -> tuple[Path, Path]:
+        """Save asymmetric key pair to files.
+
+        Args:
+            keypair: Key pair to save.
+            private_key_path: Path for private key file.
+            public_key_path: Optional path for public key (default: private + '.pub').
+
+        Returns:
+            Tuple of (private_key_path, public_key_path).
+
+        Example:
+            keypair = Filanti.generate_asymmetric_keypair()
+            Filanti.save_asymmetric_keypair(keypair, "my-key.pem")
+            # Creates my-key.pem (private) and my-key.pub (public)
+        """
+        return _save_asymmetric_keypair(keypair, private_key_path, public_key_path)
+
+    @staticmethod
+    def hybrid_encrypt(
+        path: str | Path,
+        recipient_public_keys: list[bytes | str | Path],
+        output: str | Path | None = None,
+        algorithm: str = "x25519",
+        symmetric_algorithm: str = "aes-256-gcm",
+        recipient_ids: list[str] | None = None,
+    ) -> HybridEncryptResult:
+        """Encrypt a file using hybrid encryption for multiple recipients.
+
+        Uses asymmetric key exchange to establish a shared session key,
+        then encrypts data with fast symmetric AEAD.
+
+        Args:
+            path: Path to file to encrypt.
+            recipient_public_keys: List of recipient public keys (PEM files or bytes).
+            output: Output path (default: path + .henc).
+            algorithm: Asymmetric algorithm (x25519, rsa-oaep).
+            symmetric_algorithm: Symmetric algorithm (aes-256-gcm).
+            recipient_ids: Optional list of recipient identifiers.
+
+        Returns:
+            HybridEncryptResult with output path and metadata.
+
+        Example:
+            # Encrypt for single recipient
+            Filanti.hybrid_encrypt("secret.txt", ["recipient.pub"])
+
+            # Encrypt for multiple recipients
+            Filanti.hybrid_encrypt(
+                "secret.txt",
+                ["alice.pub", "bob.pub"],
+                recipient_ids=["alice", "bob"]
+            )
+        """
+        path = Path(path)
+        out_path = Path(output) if output else path.with_suffix(path.suffix + ".henc")
+
+        alg = AsymmetricAlgorithm(algorithm.lower())
+        sym_alg = EncryptionAlgorithm(symmetric_algorithm.lower())
+
+        metadata = _hybrid_encrypt_file(
+            path, out_path, recipient_public_keys,
+            alg, sym_alg, recipient_ids
+        )
+
+        return HybridEncryptResult(
+            output_path=out_path,
+            asymmetric_algorithm=metadata.asymmetric_algorithm,
+            symmetric_algorithm=metadata.symmetric_algorithm,
+            recipient_count=metadata.recipient_count,
+        )
+
+    @staticmethod
+    def hybrid_decrypt(
+        path: str | Path,
+        private_key: bytes | str | Path,
+        output: str | Path | None = None,
+        password: str | bytes | None = None,
+        recipient_id: str | None = None,
+    ) -> HybridDecryptResult:
+        """Decrypt a hybrid encrypted file.
+
+        Args:
+            path: Path to encrypted file.
+            private_key: Private key (PEM file path or bytes).
+            output: Output path (default: removes .henc extension).
+            password: Password if private key is encrypted.
+            recipient_id: Optional recipient ID to select specific session key.
+
+        Returns:
+            HybridDecryptResult with output path and size.
+
+        Example:
+            # Decrypt with private key file
+            Filanti.hybrid_decrypt("secret.txt.henc", "my-key.pem")
+
+            # Decrypt with password-protected key
+            Filanti.hybrid_decrypt(
+                "secret.txt.henc",
+                "my-key.pem",
+                password="my-password"
+            )
+        """
+        path = Path(path)
+        if output:
+            out_path = Path(output)
+        elif str(path).endswith(".henc"):
+            out_path = Path(str(path)[:-5])
+        else:
+            out_path = path.with_suffix(".dec")
+
+        if isinstance(password, str):
+            password = password.encode("utf-8")
+
+        size = _hybrid_decrypt_file(path, out_path, private_key, password, recipient_id)
+
+        return HybridDecryptResult(output_path=out_path, size=size)
+
+    @staticmethod
+    def hybrid_encrypt_bytes(
+        data: bytes,
+        recipient_public_keys: list[bytes | str | Path],
+        algorithm: str = "x25519",
+        symmetric_algorithm: str = "aes-256-gcm",
+        recipient_ids: list[str] | None = None,
+    ) -> bytes:
+        """Encrypt bytes using hybrid encryption.
+
+        Args:
+            data: Data to encrypt.
+            recipient_public_keys: List of recipient public keys.
+            algorithm: Asymmetric algorithm.
+            symmetric_algorithm: Symmetric algorithm.
+            recipient_ids: Optional recipient identifiers.
+
+        Returns:
+            Encrypted bytes (serialized hybrid format).
+
+        Example:
+            encrypted = Filanti.hybrid_encrypt_bytes(
+                b"secret data",
+                ["recipient.pub"]
+            )
+        """
+        alg = AsymmetricAlgorithm(algorithm.lower())
+        sym_alg = EncryptionAlgorithm(symmetric_algorithm.lower())
+
+        result = _hybrid_encrypt_bytes(
+            data, recipient_public_keys, alg, sym_alg, recipient_ids
+        )
+        return result.to_bytes()
+
+    @staticmethod
+    def hybrid_decrypt_bytes(
+        data: bytes,
+        private_key: bytes | str | Path,
+        password: str | bytes | None = None,
+        recipient_id: str | None = None,
+    ) -> bytes:
+        """Decrypt hybrid encrypted bytes.
+
+        Args:
+            data: Encrypted data (serialized hybrid format).
+            private_key: Private key (PEM bytes or file path).
+            password: Password if private key is encrypted.
+            recipient_id: Optional recipient ID.
+
+        Returns:
+            Decrypted bytes.
+
+        Example:
+            decrypted = Filanti.hybrid_decrypt_bytes(encrypted, "my-key.pem")
+        """
+        if isinstance(password, str):
+            password = password.encode("utf-8")
+
+        encrypted = HybridEncryptedData.from_bytes(data)
+        return _hybrid_decrypt_bytes(encrypted, private_key, password, recipient_id)
+
+    @staticmethod
+    def get_hybrid_file_info(path: str | Path) -> AsymmetricMetadata:
+        """Get metadata from a hybrid encrypted file.
+
+        Args:
+            path: Path to hybrid encrypted file.
+
+        Returns:
+            AsymmetricMetadata with file information.
+
+        Example:
+            info = Filanti.get_hybrid_file_info("secret.txt.henc")
+            print(f"Recipients: {info.recipient_count}")
+        """
+        return get_hybrid_file_metadata(path)
+
+    # =========================================================================
     # UTILITY
     # =========================================================================
 
@@ -782,6 +1050,7 @@ class Filanti:
         return {
             "hash": get_hash_algorithms(),
             "encryption": [e.value for e in EncryptionAlgorithm],
+            "asymmetric": get_supported_asymmetric_algorithms(),
             "mac": [m.value for m in MACAlgorithm],
             "signature": [s.value for s in SignatureAlgorithm],
             "checksum": [c.value for c in ChecksumAlgorithm],
