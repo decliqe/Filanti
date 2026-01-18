@@ -11,7 +11,7 @@
   <a href="#features">Features</a> •
   <a href="#cli-reference">CLI</a> •
   <a href="#python-sdk">SDK</a> •
-  <a href="#security">Security</a>
+  <a href="#security-model">Security</a>
 </p>
 
 ---
@@ -25,6 +25,7 @@
 -  **Integrity Verification** - HMAC, digital signatures, checksums
 -  **Streaming Support** - Memory-efficient processing of large files
 -  **Plugin Architecture** - Extensible algorithm support
+-  **ENV-Based Secrets** - Secure secret injection for automation workflows
 
 Filanti acts as a **secure abstraction layer** over cryptographic operations, avoiding unsafe custom implementations while remaining extensible and auditable.
 
@@ -312,6 +313,56 @@ with SecureString("my-password") as pwd:
 # Password is automatically cleared
 ```
 
+###  ENV-Based Secrets
+
+Secure secret injection for automation and CI/CD workflows. Avoid hardcoding passwords in scripts or command lines.
+
+```python
+import os
+from filanti.api import Filanti
+
+# Set secret in environment (done by CI/CD, Docker, etc.)
+os.environ["ENCRYPT_PASSWORD"] = "my-secure-password"
+
+# Use ENV reference - secret is resolved at runtime
+Filanti.encrypt("secret.txt", password="ENV:ENCRYPT_PASSWORD")
+Filanti.decrypt("secret.txt.enc", password="ENV:ENCRYPT_PASSWORD")
+
+# Check if value is an ENV reference
+Filanti.is_env_reference("ENV:MY_SECRET")  # True
+
+# Resolve secret manually
+password = Filanti.resolve_secret("ENV:ENCRYPT_PASSWORD")
+
+# Redact secrets from output (for logging)
+safe_text = Filanti.redact_secret("Password is secret123", "secret123")
+# Returns: "Password is [REDACTED]"
+
+# Create JSON-safe output with redacted secrets
+data = {"password": "secret123", "user": "admin"}
+safe = Filanti.safe_json_output(data, secret_keys=["password"])
+# Returns: {"password": "[REDACTED]", "user": "admin"}
+```
+
+**CLI Support:**
+
+```bash
+# Set environment variable
+export ENCRYPT_PASSWORD="my-secure-password"
+
+# Use in CLI commands
+filanti encrypt secret.txt --password ENV:ENCRYPT_PASSWORD
+filanti decrypt secret.txt.enc --password ENV:ENCRYPT_PASSWORD
+filanti mac file.txt --key ENV:HMAC_KEY
+filanti sign document.pdf --key mykey --password ENV:KEY_PASSWORD
+```
+
+**Benefits:**
+-  Secrets don't appear in command line or process listings
+-  Works with CI/CD (GitHub Actions, GitLab CI, Jenkins)
+-  Compatible with Docker/Kubernetes secrets
+-  12-factor app compliance
+
 ---
 
 ## CLI Reference
@@ -355,6 +406,10 @@ filanti encrypt secret.txt
 # Encrypt with password argument
 filanti encrypt secret.txt --password "my-password"
 
+# Encrypt with ENV-based secret (recommended for automation)
+export ENCRYPT_PASSWORD="my-secure-password"
+filanti encrypt secret.txt --password ENV:ENCRYPT_PASSWORD
+
 # Encrypt with specific algorithm
 filanti encrypt secret.txt -p "password" --algorithm chacha20-poly1305
 
@@ -363,24 +418,32 @@ filanti encrypt secret.txt -o encrypted_file.bin -p "password"
 
 # Decrypt
 filanti decrypt secret.txt.enc --password "my-password"
+
+# Decrypt with ENV-based secret
+filanti decrypt secret.txt.enc --password ENV:ENCRYPT_PASSWORD
+
 filanti decrypt secret.txt.enc -o original.txt -p "password"
 ```
 
 ### MAC (Integrity)
 
 ```bash
-# Generate MAC
-filanti mac file.txt --key-file secret.key
+# Generate MAC with key
+filanti mac file.txt --key "my-secret-key"
+
+# Generate MAC with ENV-based secret (recommended)
+export HMAC_KEY="my-hmac-secret-key"
+filanti mac file.txt --key ENV:HMAC_KEY
 
 # Generate MAC with hex key
-filanti mac file.txt --key-hex abc123...
+filanti mac file.txt --key abc123def456...
 
 # Create detached .mac file
-filanti mac file.txt --key-file secret.key --create-file
+filanti mac file.txt --key ENV:HMAC_KEY --create-file
 
 # Verify MAC
-filanti verify-mac file.txt --key-file secret.key
-filanti verify-mac file.txt --key-file secret.key --mac-file file.txt.mac
+filanti verify-mac file.txt --key ENV:HMAC_KEY
+filanti verify-mac file.txt --key ENV:HMAC_KEY --mac-file file.txt.mac
 ```
 
 ### Digital Signatures
@@ -393,6 +456,9 @@ filanti keygen my_signing_key
 filanti keygen my_signing_key --protect
 # (prompts for password)
 
+# Generate with ENV-based password
+filanti keygen my_signing_key --password ENV:KEY_PASSWORD
+
 # Generate with specific algorithm
 filanti keygen my_key --algorithm ecdsa-p384
 
@@ -401,6 +467,9 @@ filanti sign document.pdf --key my_signing_key
 
 # Sign with password-protected key
 filanti sign document.pdf --key my_signing_key --password "key-password"
+
+# Sign with ENV-based password (recommended for automation)
+filanti sign document.pdf --key my_signing_key --password ENV:KEY_PASSWORD
 
 # Sign without embedding public key
 filanti sign document.pdf --key my_signing_key --no-embed-key
@@ -495,6 +564,16 @@ from filanti.api import Filanti
 | `Filanti.derive_key(password, salt, algorithm)` | Derive key from password |
 | `Filanti.algorithms()` | Get all supported algorithms |
 
+#### Secrets Methods
+
+| Method | Description |
+|--------|-------------|
+| `Filanti.resolve_secret(value, allow_empty)` | Resolve ENV:VAR_NAME to value |
+| `Filanti.is_env_reference(value)` | Check if value is ENV reference |
+| `Filanti.redact_secret(text, secret)` | Redact secret from text |
+| `Filanti.redact_secrets(text, secrets)` | Redact multiple secrets |
+| `Filanti.safe_json_output(data, secrets, secret_keys)` | Create JSON with redacted secrets |
+
 ### Direct Module Access
 
 For more control, use the underlying modules directly:
@@ -524,6 +603,11 @@ encrypt_stream_file(input_path, output_path, key)
 # Secure Memory
 from filanti.core.secure_memory import SecureBytes, secure_random_bytes
 random = secure_random_bytes(32)
+
+# Secrets
+from filanti.core.secrets import resolve_secret, redact_secret
+password = resolve_secret("ENV:MY_PASSWORD")
+safe_output = redact_secret("Password is secret123", "secret123")
 ```
 
 ---
@@ -537,6 +621,7 @@ filanti/
 │   ├── file_manager.py # File I/O operations
 │   ├── metadata.py    # Metadata handling
 │   ├── plugins.py     # Plugin architecture
+│   ├── secrets.py     # ENV-based secret resolution
 │   └── secure_memory.py # Secure memory utilities
 │
 ├── crypto/            # Encryption subsystem
@@ -742,6 +827,7 @@ from filanti import (
     DecryptionError,     # Decryption errors
     IntegrityError,      # MAC verification errors
     SignatureError,      # Signature errors
+    SecretError,         # ENV secret resolution errors
 )
 
 try:
@@ -749,6 +835,13 @@ try:
 except DecryptionError as e:
     print(f"Decryption failed: {e}")
     print(f"Context: {e.context}")
+
+# Handle missing ENV secrets
+try:
+    Filanti.encrypt("file.txt", password="ENV:MISSING_VAR")
+except SecretError as e:
+    print(f"Secret error: {e}")
+    print(f"Missing variable: {e.env_var}")
 ```
 
 ---
@@ -943,10 +1036,10 @@ pip install -e ".[dev]"
 [//]: # (---)
 
 [//]: # ()
-[//]: # (<p align="center">)
+<p align="center">
 
-[//]: # (  Made by Decliqe)
+  Made by Decliqe
 
-[//]: # (</p>)
+</p>
 
 [//]: # ()
