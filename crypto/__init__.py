@@ -37,6 +37,23 @@ from filanti.crypto.streaming import (
     encrypt_file_streaming_with_password,
     decrypt_file_streaming_with_password,
 )
+from filanti.crypto.asymmetric import (
+    AsymmetricAlgorithm,
+    AsymmetricKeyPair,
+    HybridEncryptedData,
+    AsymmetricMetadata,
+    EncryptedSessionKey,
+    generate_asymmetric_keypair,
+    save_asymmetric_keypair,
+    load_asymmetric_private_key,
+    load_asymmetric_public_key,
+    hybrid_encrypt_bytes,
+    hybrid_decrypt_bytes,
+    hybrid_encrypt_file,
+    hybrid_decrypt_file,
+    get_hybrid_file_metadata,
+    get_supported_asymmetric_algorithms,
+)
 
 __all__ = [
     # Encryption
@@ -71,4 +88,20 @@ __all__ = [
     "generate_nonce",
     "split_key",
     "derive_subkey",
+    # Asymmetric / Hybrid Encryption
+    "AsymmetricAlgorithm",
+    "AsymmetricKeyPair",
+    "HybridEncryptedData",
+    "AsymmetricMetadata",
+    "EncryptedSessionKey",
+    "generate_asymmetric_keypair",
+    "save_asymmetric_keypair",
+    "load_asymmetric_private_key",
+    "load_asymmetric_public_key",
+    "hybrid_encrypt_bytes",
+    "hybrid_decrypt_bytes",
+    "hybrid_encrypt_file",
+    "hybrid_decrypt_file",
+    "get_hybrid_file_metadata",
+    "get_supported_asymmetric_algorithms",
 ]
