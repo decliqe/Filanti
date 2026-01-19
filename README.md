@@ -21,6 +21,7 @@
 **Filanti** is a production-ready Python framework providing secure-by-default primitives for:
 
 -  **File Encryption** - AES-256-GCM, ChaCha20-Poly1305 with password-based encryption
+-  **Asymmetric Encryption** - Hybrid encryption with X25519, RSA-OAEP for multi-recipient file exchange
 -  **Cryptographic Hashing** - SHA-256/384/512, SHA3, BLAKE2b
 -  **Integrity Verification** - HMAC, digital signatures, checksums
 -  **Streaming Support** - Memory-efficient processing of large files
@@ -80,6 +81,12 @@ Filanti.encrypt("secret.txt", password="my-secure-password")
 # Decrypt
 Filanti.decrypt("secret.txt.enc", password="my-secure-password")
 
+# Asymmetric encryption (for secure file sharing)
+keypair = Filanti.generate_asymmetric_keypair()
+Filanti.save_asymmetric_keypair(keypair, "mykey.pem")
+Filanti.hybrid_encrypt("secret.txt", ["recipient.pub"])
+Filanti.hybrid_decrypt("secret.txt.henc", "mykey.pem")
+
 # Generate signing keys
 keypair = Filanti.generate_keypair()
 
@@ -101,6 +108,11 @@ filanti encrypt secret.txt --password "my-password"
 
 # Decrypt a file
 filanti decrypt secret.txt.enc --password "my-password"
+
+# Asymmetric encryption (for secure file sharing)
+filanti keygen-asymmetric mykey
+filanti encrypt-pubkey secret.txt --pubkey recipient.pub
+filanti decrypt-privkey secret.txt.henc --privkey mykey.pem
 
 # Generate signing keys
 filanti keygen my_key --protect
@@ -363,6 +375,122 @@ filanti sign document.pdf --key mykey --password ENV:KEY_PASSWORD
 -  Compatible with Docker/Kubernetes secrets
 -  12-factor app compliance
 
+###  Asymmetric / Hybrid Encryption
+
+Public-key based encryption for secure file exchange between parties who don't share a secret key.
+
+**How it works:**
+1. Sender encrypts file with recipient's **public key**
+2. A random session key is generated and encrypted for each recipient
+3. Data is encrypted with fast symmetric AEAD (AES-256-GCM)
+4. Recipient decrypts with their **private key**
+
+| Algorithm | Description | Key Type |
+|-----------|-------------|----------|
+| `x25519` | Modern elliptic curve Diffie-Hellman (default) | 256-bit |
+| `rsa-oaep` | RSA with OAEP padding | 2048/3072/4096-bit |
+
+**Key Generation:**
+
+```python
+from filanti.api import Filanti
+
+# Generate X25519 key pair (recommended)
+keypair = Filanti.generate_asymmetric_keypair()
+Filanti.save_asymmetric_keypair(keypair, "alice.pem")
+# Creates: alice.pem (private) and alice.pub (public)
+
+# Generate RSA key pair
+keypair = Filanti.generate_asymmetric_keypair(
+    algorithm="rsa-oaep",
+    rsa_key_size=4096
+)
+
+# Generate with password protection
+keypair = Filanti.generate_asymmetric_keypair(password="my-password")
+```
+
+**Encryption & Decryption:**
+
+```python
+from filanti.api import Filanti
+
+# Encrypt file for a recipient
+Filanti.hybrid_encrypt("secret.txt", ["recipient.pub"])
+# Creates: secret.txt.henc
+
+# Encrypt for multiple recipients
+Filanti.hybrid_encrypt(
+    "secret.txt",
+    ["alice.pub", "bob.pub", "charlie.pub"],
+    recipient_ids=["alice", "bob", "charlie"]
+)
+
+# Decrypt with private key
+Filanti.hybrid_decrypt("secret.txt.henc", "my-key.pem")
+
+# Decrypt with password-protected key
+Filanti.hybrid_decrypt(
+    "secret.txt.henc",
+    "my-key.pem",
+    password="key-password"
+)
+
+# Get file metadata
+info = Filanti.get_hybrid_file_info("secret.txt.henc")
+print(f"Recipients: {info.recipient_count}")
+print(f"Algorithm: {info.asymmetric_algorithm}")
+```
+
+**Bytes Encryption:**
+
+```python
+from filanti.api import Filanti
+
+# Encrypt bytes for recipients
+encrypted = Filanti.hybrid_encrypt_bytes(
+    b"secret data",
+    ["recipient.pub"]
+)
+
+# Decrypt bytes
+decrypted = Filanti.hybrid_decrypt_bytes(encrypted, "my-key.pem")
+```
+
+**CLI Usage:**
+
+```bash
+# Generate X25519 key pair
+filanti keygen-asymmetric mykey
+
+# Generate RSA key pair
+filanti keygen-asymmetric mykey --algorithm rsa-oaep --rsa-size 4096
+
+# Generate with password protection
+filanti keygen-asymmetric mykey --protect
+
+# Encrypt file for recipient
+filanti encrypt-pubkey secret.txt --pubkey recipient.pub
+
+# Encrypt for multiple recipients
+filanti encrypt-pubkey secret.txt --pubkey alice.pub --pubkey bob.pub
+
+# Decrypt with private key
+filanti decrypt-privkey secret.txt.henc --privkey mykey.pem
+
+# Decrypt with password-protected key
+filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password "key-pass"
+
+# Show hybrid file info
+filanti info-hybrid secret.txt.henc
+```
+
+**Use Cases:**
+-  **Secure file sharing** - Send encrypted files without exchanging passwords
+-  **Team collaboration** - Encrypt for multiple team members at once
+-  **End-to-end encryption** - Each recipient uses their own private key
+-  **Key escrow** - Include backup recipient for recovery
+
 ---
 
 ## CLI Reference
@@ -498,6 +626,49 @@ filanti verify-checksum file.txt --expected "0x1a2b3c4d"
 filanti verify-checksum file.txt --checksum-file file.txt.checksum
 ```
 
+### Asymmetric / Hybrid Encryption
+
+```bash
+# Generate X25519 key pair (default)
+filanti keygen-asymmetric mykey
+
+# Generate with password protection
+filanti keygen-asymmetric mykey --protect
+
+# Generate RSA key pair
+filanti keygen-asymmetric mykey --algorithm rsa-oaep --rsa-size 4096
+
+# Generate with ENV-based password
+filanti keygen-asymmetric mykey --password ENV:KEY_PASSWORD
+
+# Encrypt file for recipient
+filanti encrypt-pubkey secret.txt --pubkey recipient.pub
+
+# Encrypt with specific algorithm
+filanti encrypt-pubkey secret.txt --pubkey recipient.pub --algorithm rsa-oaep
+
+# Encrypt for multiple recipients
+filanti encrypt-pubkey secret.txt --pubkey alice.pub --pubkey bob.pub
+
+# Encrypt with recipient IDs
+filanti encrypt-pubkey secret.txt --pubkey alice.pub -r alice --pubkey bob.pub -r bob
+
+# Specify output path
+filanti encrypt-pubkey secret.txt --pubkey recipient.pub -o encrypted_file.henc
+
+# Decrypt with private key
+filanti decrypt-privkey secret.txt.henc --privkey mykey.pem
+
+# Decrypt with password-protected key
+filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password "key-pass"
+
+# Decrypt with ENV-based password
+filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password ENV:KEY_PASSWORD
+
+# Show hybrid encrypted file metadata
+filanti info-hybrid secret.txt.henc
+```
+
 ---
 
 ## Python SDK
@@ -527,6 +698,18 @@ from filanti.api import Filanti
 | `Filanti.decrypt(path, password/key, output)` | Decrypt a file |
 | `Filanti.encrypt_bytes(data, password/key, algorithm)` | Encrypt bytes |
 | `Filanti.decrypt_bytes(data, password/key)` | Decrypt bytes |
+
+#### Asymmetric / Hybrid Encryption Methods
+
+| Method | Description |
+|--------|-------------|
+| `Filanti.generate_asymmetric_keypair(algorithm, password, rsa_key_size)` | Generate asymmetric key pair |
+| `Filanti.save_asymmetric_keypair(keypair, private_path, public_path)` | Save key pair to files |
+| `Filanti.hybrid_encrypt(path, public_keys, output, algorithm)` | Encrypt file for recipients |
+| `Filanti.hybrid_decrypt(path, private_key, output, password)` | Decrypt hybrid encrypted file |
+| `Filanti.hybrid_encrypt_bytes(data, public_keys, algorithm)` | Encrypt bytes for recipients |
+| `Filanti.hybrid_decrypt_bytes(data, private_key, password)` | Decrypt hybrid encrypted bytes |
+| `Filanti.get_hybrid_file_info(path)` | Get hybrid file metadata |
 
 #### Integrity Methods
 
@@ -587,6 +770,15 @@ digest = crypto_hash.hash_file("file.txt", "sha256")
 from filanti.crypto import encrypt_file, decrypt_file
 encrypt_file(input_path, output_path, key)
 
+# Asymmetric/Hybrid Encryption
+from filanti.crypto.asymmetric import (
+    generate_asymmetric_keypair,
+    hybrid_encrypt_file,
+    hybrid_decrypt_file,
+)
+keypair = generate_asymmetric_keypair("x25519")
+hybrid_encrypt_file(input_path, output_path, [keypair.public_key])
+
 # Integrity
 from filanti.integrity import compute_file_mac, verify_file_mac
 mac = compute_file_mac("file.txt", key)
@@ -629,7 +821,8 @@ filanti/
 │   ├── decryption.py  # Decryption primitives
 │   ├── key_management.py # Key generation/handling
 │   ├── kdf.py         # Key derivation functions
-│   └── streaming.py   # Large file streaming
+│   ├── streaming.py   # Large file streaming
+│   └── asymmetric.py  # Hybrid/public-key encryption
 │
 ├── hashing/           # Hashing subsystem
 │   └── crypto_hash.py # Cryptographic hashing
@@ -653,6 +846,7 @@ api/sdk.py
     ├── hashing/crypto_hash.py
     ├── crypto/encryption.py
     ├── crypto/decryption.py
+    ├── crypto/asymmetric.py
     ├── crypto/kdf.py
     ├── crypto/key_management.py
     ├── integrity/mac.py
@@ -698,14 +892,19 @@ Filanti is designed assuming:
    - Generate keys with `Filanti.generate_key(32)`
    - Store keys securely (HSM, vault, secure key management)
 
-3. **Always verify signatures with trusted public keys**
+3. **Use hybrid encryption for secure file sharing**
+   - X25519 recommended for performance and security
+   - Protect private keys with passwords
+   - Multi-recipient encryption for team collaboration
+
+4. **Always verify signatures with trusted public keys**
    - Don't rely solely on embedded public keys
 
-4. **Use HMAC for integrity when confidentiality isn't needed**
+5. **Use HMAC for integrity when confidentiality isn't needed**
    - Faster than signatures
    - Requires shared secret key
 
-5. **Use checksums only for accidental corruption**
+6. **Use checksums only for accidental corruption**
    - Not secure against malicious modification
 
 ---
@@ -719,6 +918,23 @@ FLNT           # Magic bytes (4 bytes)
 VERSION        # Format version (1 byte)
 METADATA_LEN   # Metadata length (4 bytes)
 METADATA_JSON  # Algorithm, nonce, salt, KDF params
+CIPHERTEXT     # Encrypted data with auth tag
+```
+
+### Hybrid Encrypted File Format (.henc)
+
+```
+FLAS           # Magic bytes (4 bytes) - "Filanti Asymmetric"
+METADATA_LEN   # Metadata length (4 bytes)
+METADATA_JSON  # Includes:
+               #   - symmetric_algorithm
+               #   - nonce
+               #   - created_at
+               #   - session_keys[] (one per recipient)
+               #     - encrypted_key
+               #     - ephemeral_public_key (X25519)
+               #     - algorithm
+               #     - recipient_id (optional)
 CIPHERTEXT     # Encrypted data with auth tag
 ```
 
