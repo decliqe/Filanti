@@ -18,7 +18,7 @@
 
 ## Overview
 
-**Filanti** is a production-ready Python framework providing secure-by-default primitives for:
+**Filanti** is a Python framework providing secure-by-default primitives for:
 
 -  **File Encryption** - AES-256-GCM, ChaCha20-Poly1305 with password-based encryption
 -  **Asymmetric Encryption** - Hybrid encryption with X25519, RSA-OAEP for multi-recipient file exchange
@@ -804,40 +804,72 @@ safe_output = redact_secret("Password is secret123", "secret123")
 
 ---
 
-## Architecture
+[//]: # (## Architecture)
 
-```
-filanti/
-├── core/              
-│   ├── errors.py      
-│   ├── file_manager.py 
-│   ├── metadata.py    
-│   ├── plugins.py     
-│   ├── secrets.py     
-│   └── secure_memory.py 
-│
-├── crypto/            
-│   ├── encryption.py  
-│   ├── decryption.py  
-│   ├── key_management.py 
-│   ├── kdf.py         
-│   ├── streaming.py   
-│   └── asymmetric.py  
-│
-├── hashing/           
-│   └── crypto_hash.py 
-│
-├── integrity/        
-│   ├── checksum.py    
-│   ├── mac.py         
-│   └── signature.py   
-│
-├── cli/               
-│   └── main.py        
-│
-└── api/               
-    └── sdk.py         
-```
+[//]: # ()
+[//]: # (```)
+
+[//]: # (filanti/)
+
+[//]: # (├── core/              )
+
+[//]: # (│   ├── errors.py      )
+
+[//]: # (│   ├── file_manager.py )
+
+[//]: # (│   ├── metadata.py    )
+
+[//]: # (│   ├── plugins.py     )
+
+[//]: # (│   ├── secrets.py     )
+
+[//]: # (│   └── secure_memory.py )
+
+[//]: # (│)
+
+[//]: # (├── crypto/            )
+
+[//]: # (│   ├── encryption.py  )
+
+[//]: # (│   ├── decryption.py  )
+
+[//]: # (│   ├── key_management.py )
+
+[//]: # (│   ├── kdf.py         )
+
+[//]: # (│   ├── streaming.py   )
+
+[//]: # (│   └── asymmetric.py  )
+
+[//]: # (│)
+
+[//]: # (├── hashing/           )
+
+[//]: # (│   └── crypto_hash.py )
+
+[//]: # (│)
+
+[//]: # (├── integrity/        )
+
+[//]: # (│   ├── checksum.py    )
+
+[//]: # (│   ├── mac.py         )
+
+[//]: # (│   └── signature.py   )
+
+[//]: # (│)
+
+[//]: # (├── cli/               )
+
+[//]: # (│   └── main.py        )
+
+[//]: # (│)
+
+[//]: # (└── api/               )
+
+[//]: # (    └── sdk.py         )
+
+[//]: # (```)
 
 ### Module Dependencies
 
@@ -1098,7 +1130,8 @@ encrypt_stream_file(input_path, output_path, key, chunk_size=16*1024)   # 16 KB
 
 ---
 
-## Contributing
+## Contributors || Acknowledgements
+[@stephenlb](https://github.com/stephenlb) Thanks for the inspiration and guidance on encryption and security best practices.
 
 ### Development Setup
 
@@ -1129,15 +1162,21 @@ pip install -e ".[dev]"
 
 [//]: # (```)
 
-### Pull Request Guidelines
+[//]: # (### Pull Request Guidelines)
 
-1. Write tests for new features
-2. Update documentation
-3. Follow existing code style
-4. Add type hints
-5. Run full test suite before submitting
+[//]: # ()
+[//]: # (1. Write tests for new features)
 
----
+[//]: # (2. Update documentation)
+
+[//]: # (3. Follow existing code style)
+
+[//]: # (4. Add type hints)
+
+[//]: # (5. Run full test suite before submitting)
+
+[//]: # ()
+[//]: # (---)
 
 ## Changelog
 
