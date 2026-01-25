@@ -1,0 +1,80 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "filanti"
+version = "1.0.0"
+description = "A modular, security-focused file framework for encryption, hashing, and integrity verification"
+readme = "README.md"
+license = "MIT"
+authors = ["Decliqe"]
+maintainers = ["Decliqe"]
+keywords = [
+    "encryption",
+    "decryption",
+    "hashing",
+    "security",
+    "cryptography",
+    "file-integrity",
+    "aes-gcm",
+    "chacha20",
+    "argon2",
+    "hmac",
+    "digital-signatures",
+    "ed25519",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Security :: Cryptography",
+    "Topic :: System :: Filesystems",
+    "Typing :: Typed",
+]
+packages = [{ include = "filanti"}]
+
+[tool.poetry.dependencies]
+python = ">=3.11"
+cryptography = ">=42.0.0"
+typer = ">=0.9.0"
+argon2-cffi = ">=23.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.4.0"
+pytest-cov = ">=4.1.0"
+ruff = ">=0.1.0"
+mypy = ">=1.7.0"
+
+[tool.poetry.scripts]
+filanti = "filanti.cli.main:app"
+
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "PT"]
+ignore = ["S101"]  # Allow assert in tests
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+

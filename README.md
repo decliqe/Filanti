@@ -808,35 +808,35 @@ safe_output = redact_secret("Password is secret123", "secret123")
 
 ```
 filanti/
-├── core/              # Core infrastructure
-│   ├── errors.py      # Exception hierarchy
-│   ├── file_manager.py # File I/O operations
-│   ├── metadata.py    # Metadata handling
-│   ├── plugins.py     # Plugin architecture
-│   ├── secrets.py     # ENV-based secret resolution
-│   └── secure_memory.py # Secure memory utilities
+├── core/              
+│   ├── errors.py      
+│   ├── file_manager.py 
+│   ├── metadata.py    
+│   ├── plugins.py     
+│   ├── secrets.py     
+│   └── secure_memory.py 
 │
-├── crypto/            # Encryption subsystem
-│   ├── encryption.py  # Encryption primitives
-│   ├── decryption.py  # Decryption primitives
-│   ├── key_management.py # Key generation/handling
-│   ├── kdf.py         # Key derivation functions
-│   ├── streaming.py   # Large file streaming
-│   └── asymmetric.py  # Hybrid/public-key encryption
+├── crypto/            
+│   ├── encryption.py  
+│   ├── decryption.py  
+│   ├── key_management.py 
+│   ├── kdf.py         
+│   ├── streaming.py   
+│   └── asymmetric.py  
 │
-├── hashing/           # Hashing subsystem
-│   └── crypto_hash.py # Cryptographic hashing
+├── hashing/           
+│   └── crypto_hash.py 
 │
-├── integrity/         # Integrity subsystem
-│   ├── checksum.py    # Non-crypto checksums
-│   ├── mac.py         # HMAC operations
-│   └── signature.py   # Digital signatures
+├── integrity/        
+│   ├── checksum.py    
+│   ├── mac.py         
+│   └── signature.py   
 │
-├── cli/               # Command-line interface
-│   └── main.py        # CLI commands
+├── cli/               
+│   └── main.py        
 │
-└── api/               # High-level API
-    └── sdk.py         # Filanti SDK class
+└── api/               
+    └── sdk.py         
 ```
 
 ### Module Dependencies
@@ -1035,15 +1035,15 @@ All Filanti exceptions inherit from `FilantiError`:
 
 ```python
 from filanti import (
-    FilantiError,        # Base exception
-    FileOperationError,  # File I/O errors
-    HashingError,        # Hashing errors
-    ValidationError,     # Verification failures
-    EncryptionError,     # Encryption errors
-    DecryptionError,     # Decryption errors
-    IntegrityError,      # MAC verification errors
-    SignatureError,      # Signature errors
-    SecretError,         # ENV secret resolution errors
+    FilantiError,       
+    FileOperationError, 
+    HashingError,        
+    ValidationError,     
+    EncryptionError,     
+    DecryptionError,     
+    IntegrityError,      
+    SignatureError,      
+    SecretError,         
 )
 
 try:
@@ -1207,51 +1207,66 @@ pip install -e ".[dev]"
 [//]: # (---)
 
 [//]: # ()
-[//]: # (## License)
+## License
 
-[//]: # ()
-[//]: # (MIT License)
+
+MIT License
 
 [//]: # ()
 [//]: # (Copyright &#40;c&#41; 2026 Filanti Contributors)
 
 [//]: # ()
+[//]: # ()
 [//]: # (Permission is hereby granted, free of charge, to any person obtaining a copy)
 
+[//]: # ()
 [//]: # (of this software and associated documentation files &#40;the "Software"&#41;, to deal)
 
+[//]: # ()
 [//]: # (in the Software without restriction, including without limitation the rights)
 
+[//]: # ()
 [//]: # (to use, copy, modify, merge, publish, distribute, sublicense, and/or sell)
 
+[//]: # ()
 [//]: # (copies of the Software, and to permit persons to whom the Software is)
 
+[//]: # ()
 [//]: # (furnished to do so, subject to the following conditions:)
 
 [//]: # ()
+[//]: # ()
 [//]: # (The above copyright notice and this permission notice shall be included in all)
 
+[//]: # ()
 [//]: # (copies or substantial portions of the Software.)
 
 [//]: # ()
+[//]: # ()
 [//]: # (THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR)
 
+[//]: # ()
 [//]: # (IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,)
 
+[//]: # ()
 [//]: # (FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE)
 
+[//]: # ()
 [//]: # (AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER)
 
+[//]: # ()
 [//]: # (LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,)
 
+[//]: # ()
 [//]: # (OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE)
 
+[//]: # ()
 [//]: # (SOFTWARE.)
 
-[//]: # ()
-[//]: # (---)
 
-[//]: # ()
+---
+
+
 <p align="center">
 
   Made by Decliqe
