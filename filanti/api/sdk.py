@@ -219,6 +219,36 @@ class Filanti:
     """
 
     # =========================================================================
+    # SECRETS & ENVIRONMENT
+    # =========================================================================
+
+    @staticmethod
+    def load_dotenv(
+        path: str | Path = ".env",
+        override: bool = False,
+    ) -> dict[str, str]:
+        """Load environment variables from a .env file.
+
+        Loads variables from the specified .env file into the environment.
+        This is useful for loading secrets before encryption/decryption.
+
+        Args:
+            path: Path to .env file (default: ".env" in current directory).
+            override: If True, override existing environment variables.
+
+        Returns:
+            Dictionary of loaded variables (name -> value).
+
+        Example:
+            # Load secrets from .env
+            Filanti.load_dotenv(".env")
+
+            # Now use ENV references
+            Filanti.encrypt("file.txt", password="ENV:MY_PASSWORD")
+        """
+        return load_dotenv(path, override=override)
+
+    # =========================================================================
     # HASHING
     # =========================================================================
 
@@ -311,20 +341,30 @@ class Filanti:
         key: bytes | None = None,
         output: str | Path | None = None,
         algorithm: str = "aes-256-gcm",
+        remove_source: bool = False,
+        secure_delete: bool = True,
+        dotenv_path: str | Path | None = None,
     ) -> EncryptResult:
         """Encrypt a file.
 
         Provide either password OR key, not both.
 
-        Supports ENV-based secret resolution for password:
+        Supports multiple secret reference formats:
             Filanti.encrypt("file.txt", password="ENV:MY_PASSWORD")
+            Filanti.encrypt("file.txt", password="$env:MY_PASSWORD")  # PowerShell
+            Filanti.encrypt("file.txt", password="${MY_PASSWORD}")    # Shell-style
+            Filanti.encrypt("file.txt", password="env.MY_PASSWORD")   # Dot notation
 
         Args:
             path: Path to file to encrypt.
-            password: Password for key derivation. Supports ENV:VAR_NAME syntax.
+            password: Password for key derivation. Supports ENV reference syntax.
             key: Raw encryption key (32 bytes for AES-256).
             output: Output path (default: path + .enc).
             algorithm: Encryption algorithm.
+            remove_source: If True, delete original file after successful encryption.
+            secure_delete: If True and remove_source is True, securely overwrite
+                the original file before deletion.
+            dotenv_path: Optional path to .env file to load secrets from.
 
         Returns:
             EncryptResult with output path and metadata.
@@ -338,15 +378,23 @@ class Filanti:
 
         if password:
             # Resolve password from ENV if needed
-            resolved_password = resolve_secret(password)
-            metadata = encrypt_file_with_password(path, out_path, resolved_password, alg)
+            resolved_password = resolve_secret(password, dotenv_path=dotenv_path)
+            metadata = encrypt_file_with_password(
+                path, out_path, resolved_password, alg,
+                remove_source=remove_source,
+                secure_delete=secure_delete,
+            )
             return EncryptResult(
                 output_path=out_path,
                 algorithm=metadata.algorithm,
                 kdf_algorithm=metadata.kdf_algorithm,
             )
         elif key:
-            encrypt_file(path, out_path, key, alg)
+            encrypt_file(
+                path, out_path, key, alg,
+                remove_source=remove_source,
+                secure_delete=secure_delete,
+            )
             return EncryptResult(output_path=out_path, algorithm=algorithm)
         else:
             raise ValueError("Must provide either password or key")
@@ -357,19 +405,24 @@ class Filanti:
         password: str | None = None,
         key: bytes | None = None,
         output: str | Path | None = None,
+        dotenv_path: str | Path | None = None,
     ) -> DecryptResult:
         """Decrypt a file.
 
         Provide either password OR key, not both.
 
-        Supports ENV-based secret resolution for password:
+        Supports multiple secret reference formats:
             Filanti.decrypt("file.enc", password="ENV:MY_PASSWORD")
+            Filanti.decrypt("file.enc", password="$env:MY_PASSWORD")  # PowerShell
+            Filanti.decrypt("file.enc", password="${MY_PASSWORD}")    # Shell-style
+            Filanti.decrypt("file.enc", password="env.MY_PASSWORD")   # Dot notation
 
         Args:
             path: Path to encrypted file.
-            password: Password used for encryption. Supports ENV:VAR_NAME syntax.
+            password: Password used for encryption. Supports ENV reference syntax.
             key: Raw encryption key.
             output: Output path (default: removes .enc extension).
+            dotenv_path: Optional path to .env file to load secrets from.
 
         Returns:
             DecryptResult with output path and size.
@@ -387,7 +440,7 @@ class Filanti:
 
         if password:
             # Resolve password from ENV if needed
-            resolved_password = resolve_secret(password)
+            resolved_password = resolve_secret(password, dotenv_path=dotenv_path)
             size = decrypt_file_with_password(path, out_path, resolved_password)
         elif key:
             size = decrypt_file(path, out_path, key)
@@ -402,17 +455,22 @@ class Filanti:
         password: str | None = None,
         key: bytes | None = None,
         algorithm: str = "aes-256-gcm",
+        dotenv_path: str | Path | None = None,
     ) -> bytes:
         """Encrypt bytes data.
 
-        Supports ENV-based secret resolution for password:
+        Supports multiple secret reference formats:
             Filanti.encrypt_bytes(data, password="ENV:MY_PASSWORD")
+            Filanti.encrypt_bytes(data, password="$env:MY_PASSWORD")  # PowerShell
+            Filanti.encrypt_bytes(data, password="${MY_PASSWORD}")    # Shell-style
+            Filanti.encrypt_bytes(data, password="env.MY_PASSWORD")   # Dot notation
 
         Args:
             data: Data to encrypt.
-            password: Password for key derivation. Supports ENV:VAR_NAME syntax.
+            password: Password for key derivation. Supports ENV reference syntax.
             key: Raw encryption key.
             algorithm: Encryption algorithm.
+            dotenv_path: Optional path to .env file to load secrets from.
 
         Returns:
             Encrypted bytes (includes nonce and auth tag).
@@ -424,7 +482,7 @@ class Filanti:
 
         if password is not None:
             # Resolve password from ENV if needed
-            resolved_password = resolve_secret(password)
+            resolved_password = resolve_secret(password, dotenv_path=dotenv_path)
             result = _encrypt_bytes_with_password(data, resolved_password, alg)
             return result.to_bytes()
         elif key is not None:
@@ -439,16 +497,21 @@ class Filanti:
         data: bytes,
         password: str | None = None,
         key: bytes | None = None,
+        dotenv_path: str | Path | None = None,
     ) -> bytes:
         """Decrypt bytes data.
 
-        Supports ENV-based secret resolution for password:
+        Supports multiple secret reference formats:
             Filanti.decrypt_bytes(data, password="ENV:MY_PASSWORD")
+            Filanti.decrypt_bytes(data, password="$env:MY_PASSWORD")  # PowerShell
+            Filanti.decrypt_bytes(data, password="${MY_PASSWORD}")    # Shell-style
+            Filanti.decrypt_bytes(data, password="env.MY_PASSWORD")   # Dot notation
 
         Args:
             data: Encrypted data.
-            password: Password used for encryption. Supports ENV:VAR_NAME syntax.
+            password: Password used for encryption. Supports ENV reference syntax.
             key: Raw encryption key.
+            dotenv_path: Optional path to .env file to load secrets from.
 
         Returns:
             Decrypted bytes.
@@ -458,7 +521,7 @@ class Filanti:
         """
         if password is not None:
             # Resolve password from ENV if needed
-            resolved_password = resolve_secret(password)
+            resolved_password = resolve_secret(password, dotenv_path=dotenv_path)
             # Parse the encrypted data from bytes
             encrypted = EncryptedData.from_bytes(data)
             return _decrypt_bytes_with_password(encrypted, resolved_password)
