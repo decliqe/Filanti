@@ -11,6 +11,9 @@ from typing import BinaryIO
 
 from filanti.core.errors import FileOperationError
 
+import os
+import secrets
+
 
 # Default buffer size for streaming operations (64 KB)
 DEFAULT_BUFFER_SIZE = 65536
@@ -291,8 +294,7 @@ class FileManager:
             FileOperationError: If file cannot be deleted.
             ValueError: If passes is less than 1.
         """
-        import os
-        import secrets
+
 
         if passes < 1:
             raise ValueError("passes must be at least 1")

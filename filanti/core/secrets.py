@@ -1,11 +1,25 @@
 """
 Secret resolution module.
 
-Provides secure, runtime-only secret resolution from environment variables.
-Secrets are never resolved at import time to prevent accidental exposure.
+Provides secure, runtime-only secret resolution from environment variables
+and .env files. Secrets are never resolved at import time to prevent
+accidental exposure.
+
+Supported secret reference formats:
+    - ENV:SECRET_NAME      (Unix-style, original format)
+    - $env:SECRET_NAME     (PowerShell-style)
+    - ${SECRET_NAME}       (Shell-style variable expansion)
+    - env.SECRET_NAME      (Dot notation, cross-platform friendly)
 
 Usage:
-    # Resolve ENV:SECRET_NAME pattern
+    # Resolve any supported pattern
+    password = resolve_secret("ENV:MY_PASSWORD")
+    password = resolve_secret("$env:MY_PASSWORD")  # PowerShell
+    password = resolve_secret("${MY_PASSWORD}")    # Shell-style
+    password = resolve_secret("env.MY_PASSWORD")   # Dot notation
+
+    # Load from .env file
+    load_dotenv(".env")
     password = resolve_secret("ENV:MY_PASSWORD")
 
     # Check if value is an ENV reference
@@ -18,57 +32,162 @@ Usage:
 
 import os
 import re
+from pathlib import Path
 from typing import Pattern
 
-from filanti.core.errors import SecretError
+from filanti.core.errors import SecretError, FileOperationError
 
 
-# Pattern for ENV-based secret references: ENV:SECRET_NAME
-ENV_PATTERN: Pattern[str] = re.compile(r"^ENV:([A-Za-z_][A-Za-z0-9_]*)$")
+# Multiple patterns for secret references
+PATTERNS: dict[str, Pattern[str]] = {
+    "env_colon": re.compile(r"^ENV:([A-Za-z_][A-Za-z0-9_]*)$"),           # ENV:SECRET
+    "powershell": re.compile(r"^\$env:([A-Za-z_][A-Za-z0-9_]*)$"),        # $env:SECRET
+    "shell_style": re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$"),       # ${SECRET}
+    "dot_notation": re.compile(r"^env\.([A-Za-z_][A-Za-z0-9_]*)$"),       # env.SECRET
+}
+
+# Legacy pattern for backward compatibility
+ENV_PATTERN: Pattern[str] = PATTERNS["env_colon"]
 
 # Redaction placeholder
 REDACTED_PLACEHOLDER = "[REDACTED]"
 
 
 def is_env_reference(value: str) -> bool:
-    """Check if a value is an ENV-based secret reference.
+    """Check if a value is any type of secret reference.
+
+    Supports multiple formats:
+        - ENV:SECRET_NAME (Unix-style)
+        - $env:SECRET_NAME (PowerShell-style)
+        - ${SECRET_NAME} (Shell-style)
+        - env.SECRET_NAME (Dot notation)
 
     Args:
         value: String to check.
 
     Returns:
-        True if value matches ENV:SECRET_NAME pattern.
+        True if value matches any supported secret reference pattern.
     """
     if value is None:
         return False
-    return bool(ENV_PATTERN.match(value))
+    return any(pattern.match(value) for pattern in PATTERNS.values())
 
 
 def get_env_var_name(value: str) -> str | None:
-    """Extract environment variable name from ENV reference.
+    """Extract environment variable name from any reference format.
 
     Args:
-        value: ENV reference string (e.g., "ENV:MY_SECRET").
+        value: Secret reference string (e.g., "ENV:MY_SECRET", "$env:MY_SECRET").
 
     Returns:
         Environment variable name, or None if not a valid reference.
     """
-    match = ENV_PATTERN.match(value)
-    return match.group(1) if match else None
+    if value is None:
+        return None
+    for pattern in PATTERNS.values():
+        match = pattern.match(value)
+        if match:
+            return match.group(1)
+    return None
 
 
-def resolve_secret(value: str, allow_empty: bool = False) -> str:
-    """Resolve a secret value, handling ENV-based references.
+def load_dotenv(
+    path: str | Path = ".env",
+    override: bool = False,
+    encoding: str = "utf-8",
+) -> dict[str, str]:
+    """Load environment variables from a .env file.
 
-    This function supports runtime-only secret resolution. When a value
-    matches the pattern ENV:SECRET_NAME, the actual secret is read from
-    the corresponding environment variable at runtime.
+    Supports standard .env format:
+        KEY=value
+        KEY="quoted value"
+        KEY='single quoted'
+        # comments
+        export KEY=value  (optional export prefix)
+
+    Args:
+        path: Path to .env file (default: ".env" in current directory).
+        override: If True, override existing environment variables.
+        encoding: File encoding (default: utf-8).
+
+    Returns:
+        Dictionary of loaded variables (name -> value).
+
+    Raises:
+        FileOperationError: If file cannot be read.
+    """
+    env_path = Path(path)
+    loaded: dict[str, str] = {}
+
+    if not env_path.exists():
+        return loaded
+
+    try:
+        content = env_path.read_text(encoding=encoding)
+    except OSError as e:
+        raise FileOperationError(
+            f"Failed to read .env file: {e}",
+            path=str(env_path),
+            operation="load_dotenv",
+        ) from e
+
+    for line in content.splitlines():
+        line = line.strip()
+
+        # Skip empty lines and comments
+        if not line or line.startswith("#"):
+            continue
+
+        # Remove optional 'export ' prefix
+        if line.startswith("export "):
+            line = line[7:].strip()
+
+        # Parse KEY=VALUE
+        if "=" not in line:
+            continue
+
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+
+        # Remove quotes
+        if len(value) >= 2:
+            if (value.startswith('"') and value.endswith('"')) or \
+               (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+
+        # Validate key format
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            continue
+
+        loaded[key] = value
+
+        # Set in environment
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+    return loaded
+
+
+def resolve_secret(
+    value: str,
+    allow_empty: bool = False,
+    dotenv_path: str | Path | None = None,
+) -> str:
+    """Resolve a secret value from multiple sources.
+
+    Supports multiple reference formats:
+        - ENV:SECRET_NAME (Unix-style)
+        - $env:SECRET_NAME (PowerShell-style)
+        - ${SECRET_NAME} (Shell-style)
+        - env.SECRET_NAME (Dot notation)
 
     Args:
         value: The value to resolve. Can be:
             - A literal string (returned as-is)
-            - An ENV reference (e.g., "ENV:MY_PASSWORD")
+            - Any supported ENV reference format
         allow_empty: If False (default), raises SecretError for empty values.
+        dotenv_path: Optional path to .env file to load before resolution.
 
     Returns:
         The resolved secret value.
@@ -81,27 +200,30 @@ def resolve_secret(value: str, allow_empty: bool = False) -> str:
         # Set environment variable
         os.environ["ENCRYPTION_KEY"] = "my-secret-key"
 
-        # Resolve it
+        # Resolve using any format
         key = resolve_secret("ENV:ENCRYPTION_KEY")
-        # Returns: "my-secret-key"
+        key = resolve_secret("$env:ENCRYPTION_KEY")  # PowerShell
+        key = resolve_secret("${ENCRYPTION_KEY}")    # Shell-style
+        key = resolve_secret("env.ENCRYPTION_KEY")   # Dot notation
 
         # Literal values pass through unchanged
         literal = resolve_secret("direct-password")
-        # Returns: "direct-password"
     """
     if value is None:
         raise SecretError("Secret value cannot be None")
 
-    # Check if this is an ENV reference
-    match = ENV_PATTERN.match(value)
-    if not match:
-        # Not an ENV reference, return as-is
+    # Load .env if specified
+    if dotenv_path is not None:
+        load_dotenv(dotenv_path, override=False)
+
+    # Try to extract env var name from any supported pattern
+    env_var_name = get_env_var_name(value)
+
+    if env_var_name is None:
+        # Not a reference, return as-is
         return value
 
-    # Extract environment variable name
-    env_var_name = match.group(1)
-
-    # Resolve from environment at runtime
+    # Resolve from environment
     resolved = os.environ.get(env_var_name)
 
     if resolved is None:
@@ -147,6 +269,12 @@ def resolve_secret_optional(value: str | None) -> str | None:
     Unlike resolve_secret(), this function does not raise an error if
     the environment variable is not set. Useful for optional secrets.
 
+    Supports all reference formats:
+        - ENV:SECRET_NAME (Unix-style)
+        - $env:SECRET_NAME (PowerShell-style)
+        - ${SECRET_NAME} (Shell-style)
+        - env.SECRET_NAME (Dot notation)
+
     Args:
         value: The value to resolve, or None.
 
@@ -161,11 +289,13 @@ def resolve_secret_optional(value: str | None) -> str | None:
     if value is None:
         return None
 
-    match = ENV_PATTERN.match(value)
-    if not match:
+    # Try to extract env var name from any supported pattern
+    env_var_name = get_env_var_name(value)
+
+    if env_var_name is None:
+        # Not a reference, return as-is
         return value
 
-    env_var_name = match.group(1)
     resolved = os.environ.get(env_var_name)
 
     if resolved is None:
@@ -269,6 +399,12 @@ def validate_env_reference(value: str) -> tuple[bool, str | None]:
     Checks if the reference is syntactically valid and if the
     environment variable exists.
 
+    Supports all reference formats:
+        - ENV:SECRET_NAME (Unix-style)
+        - $env:SECRET_NAME (PowerShell-style)
+        - ${SECRET_NAME} (Shell-style)
+        - env.SECRET_NAME (Dot notation)
+
     Args:
         value: ENV reference to validate.
 
@@ -278,6 +414,7 @@ def validate_env_reference(value: str) -> tuple[bool, str | None]:
 
     Example:
         is_valid, error = validate_env_reference("ENV:MY_SECRET")
+        is_valid, error = validate_env_reference("$env:MY_SECRET")
         if not is_valid:
             print(f"Invalid: {error}")
     """
@@ -295,3 +432,17 @@ def validate_env_reference(value: str) -> tuple[bool, str | None]:
         return False, f"Environment variable '{env_var_name}' is empty"
 
     return True, None
+
+
+def get_supported_patterns() -> list[str]:
+    """Get list of supported secret reference patterns.
+
+    Returns:
+        List of pattern descriptions with examples.
+    """
+    return [
+        "ENV:VAR_NAME - Unix-style (e.g., ENV:MY_SECRET)",
+        "$env:VAR_NAME - PowerShell-style (e.g., $env:MY_SECRET)",
+        "${VAR_NAME} - Shell-style (e.g., ${MY_SECRET})",
+        "env.VAR_NAME - Dot notation (e.g., env.MY_SECRET)",
+    ]
