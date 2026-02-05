@@ -9,6 +9,7 @@ Supported algorithms:
 - ChaCha20-Poly1305 (excellent software performance)
 """
 
+import base64
 import json
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -37,7 +38,12 @@ DEFAULT_ALGORITHM = EncryptionAlgorithm.AES_256_GCM
 
 # File format magic bytes
 FILANTI_MAGIC = b"FLNT"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 1  # Legacy v1 format version
+FORMAT_VERSION_V2 = 2  # New v2 format with encrypted metadata
+
+# Product identifier for header
+PRODUCT_NAME = "FLNT"
+HEADER_VERSION = "1.1.0"
 
 # Chunk size for streaming encryption (64 KB)
 CHUNK_SIZE = 65536
@@ -149,6 +155,37 @@ class EncryptionMetadata:
         """Deserialize metadata from bytes."""
         parsed = json.loads(data.decode("utf-8"))
         return cls(**parsed)
+
+
+@dataclass
+class FileHeader:
+    """Minimal public header for encrypted files - base64 encoded.
+
+    Only exposes product name and version, no cryptographic details.
+    """
+
+    product: str = PRODUCT_NAME
+    version: str = HEADER_VERSION
+
+    def to_base64(self) -> bytes:
+        """Encode header as base64 bytes."""
+        data = {"p": self.product, "v": self.version}
+        json_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        return base64.b64encode(json_bytes)
+
+    @classmethod
+    def from_base64(cls, data: bytes) -> "FileHeader":
+        """Decode header from base64 bytes."""
+        try:
+            json_bytes = base64.b64decode(data)
+            parsed = json.loads(json_bytes.decode("utf-8"))
+            return cls(product=parsed.get("p", "FLNT"), version=parsed.get("v", "1.0.0"))
+        except Exception as e:
+            raise EncryptionError(f"Invalid file header: {e}") from e
+
+    def validate(self) -> bool:
+        """Validate the header is from Filanti."""
+        return self.product == PRODUCT_NAME
 
 
 def _get_cipher(algorithm: EncryptionAlgorithm, key: bytes):
@@ -386,12 +423,56 @@ def encrypt_file_with_password(
 
 
 def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata) -> bytes:
-    """Build encrypted file with header.
+    """Build encrypted file with v2 format (encrypted metadata).
 
-    File format:
+    File format v2:
+    - N bytes: Base64 header ({"p":"FLNT","v":"1.1.0"})
+    - 2 bytes: Header length (big-endian uint16)
+    - 12 bytes: Metadata nonce (for deriving metadata key and encryption)
+    - 4 bytes: Encrypted metadata length (big-endian uint32)
+    - M bytes: Encrypted metadata ciphertext
+    - K bytes: File ciphertext
+
+    The metadata is encrypted using AES-GCM with a key derived from:
+    SHA-256(metadata_nonce || "filanti-meta-v2")
+    """
+    from hashlib import sha256
+
+    # Create minimal public header
+    header = FileHeader()
+    header_b64 = header.to_base64()
+
+    # Generate a random nonce for metadata encryption
+    meta_nonce = generate_nonce(NONCE_SIZE_GCM)
+
+    # Derive metadata encryption key from the nonce
+    meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
+
+    # Encrypt metadata using AES-GCM
+    meta_plaintext = metadata.to_bytes()
+    meta_cipher = AESGCM(meta_key)
+    meta_ciphertext = meta_cipher.encrypt(meta_nonce, meta_plaintext, None)
+
+    # Assemble v2 file
+    parts = [
+        header_b64,                                    # Base64 header
+        len(header_b64).to_bytes(2, "big"),           # Header length (2 bytes)
+        meta_nonce,                                    # Metadata nonce (12 bytes)
+        len(meta_ciphertext).to_bytes(4, "big"),      # Encrypted metadata length (4 bytes)
+        meta_ciphertext,                               # Encrypted metadata
+        ciphertext,                                    # File ciphertext
+    ]
+
+    return b"".join(parts)
+
+
+def _build_encrypted_file_v1(ciphertext: bytes, metadata: EncryptionMetadata) -> bytes:
+    """Build encrypted file with legacy v1 format (plaintext metadata).
+
+    File format v1 (legacy):
     - 4 bytes: Magic ("FLNT")
     - 4 bytes: Metadata length (big-endian uint32)
-    - N bytes: Metadata (JSON)
+    - N bytes: Metadata (JSON plaintext)
     - M bytes: Ciphertext
     """
     meta_bytes = metadata.to_bytes()
@@ -402,6 +483,8 @@ def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata) -> by
 
 def parse_encrypted_file(data: bytes) -> tuple[EncryptionMetadata, bytes]:
     """Parse encrypted file header and extract ciphertext.
+
+    Supports both v1 (legacy) and v2 formats.
 
     Args:
         data: Encrypted file bytes.
@@ -415,6 +498,16 @@ def parse_encrypted_file(data: bytes) -> tuple[EncryptionMetadata, bytes]:
     if len(data) < 8:
         raise EncryptionError("Invalid encrypted file: too short")
 
+    # Check for v1 format (starts with raw FLNT magic bytes)
+    if data[:4] == FILANTI_MAGIC:
+        return _parse_encrypted_file_v1(data)
+
+    # Try v2 format (starts with base64-encoded header)
+    return _parse_encrypted_file_v2(data)
+
+
+def _parse_encrypted_file_v1(data: bytes) -> tuple[EncryptionMetadata, bytes]:
+    """Parse legacy v1 format encrypted file."""
     if data[:4] != FILANTI_MAGIC:
         raise EncryptionError("Invalid encrypted file: bad magic bytes")
 
@@ -432,4 +525,93 @@ def parse_encrypted_file(data: bytes) -> tuple[EncryptionMetadata, bytes]:
         raise EncryptionError(f"Invalid encrypted file metadata: {e}") from e
 
     return metadata, ciphertext
+
+
+def _parse_encrypted_file_v2(data: bytes) -> tuple[EncryptionMetadata, bytes]:
+    """Parse v2 format encrypted file with encrypted metadata.
+
+    File format v2:
+    - N bytes: Base64 header
+    - 2 bytes: Header length
+    - 12 bytes: Metadata nonce
+    - 4 bytes: Encrypted metadata length
+    - M bytes: Encrypted metadata
+    - K bytes: File ciphertext
+    """
+    from hashlib import sha256
+
+    try:
+        # Find header boundary by scanning for valid base64 header
+        header_b64 = None
+        header_len_pos = None
+
+        for try_len in range(20, 64):
+            if try_len + 2 > len(data):
+                break
+            potential_header = data[:try_len]
+            potential_len = int.from_bytes(data[try_len:try_len+2], "big")
+            if potential_len == try_len:
+                # Found matching header length
+                try:
+                    FileHeader.from_base64(potential_header)
+                    header_b64 = potential_header
+                    header_len_pos = try_len
+                    break
+                except Exception:
+                    continue
+
+        if header_b64 is None:
+            raise EncryptionError("Invalid encrypted file: cannot parse v2 header")
+
+        # Parse and validate header
+        header = FileHeader.from_base64(header_b64)
+        if not header.validate():
+            raise EncryptionError("Invalid encrypted file: wrong product identifier")
+
+        offset = header_len_pos + 2  # Skip header + header length bytes
+
+        # Read metadata nonce (12 bytes)
+        if len(data) < offset + NONCE_SIZE_GCM:
+            raise EncryptionError("Invalid encrypted file: truncated")
+
+        meta_nonce = data[offset:offset + NONCE_SIZE_GCM]
+        offset += NONCE_SIZE_GCM
+
+        # Read encrypted metadata length
+        if len(data) < offset + 4:
+            raise EncryptionError("Invalid encrypted file: truncated")
+
+        encrypted_meta_len = int.from_bytes(data[offset:offset+4], "big")
+        offset += 4
+
+        # Read encrypted metadata
+        if len(data) < offset + encrypted_meta_len:
+            raise EncryptionError("Invalid encrypted file: truncated metadata")
+
+        meta_ciphertext = data[offset:offset + encrypted_meta_len]
+        offset += encrypted_meta_len
+
+        # Extract file ciphertext
+        ciphertext = data[offset:]
+
+        # Derive metadata decryption key
+        meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
+
+        # Decrypt metadata
+        meta_cipher = AESGCM(meta_key)
+        try:
+            meta_plaintext = meta_cipher.decrypt(meta_nonce, meta_ciphertext, None)
+        except InvalidTag:
+            raise EncryptionError("Invalid encrypted file: metadata authentication failed")
+
+        # Parse metadata
+        metadata = EncryptionMetadata.from_bytes(meta_plaintext)
+
+        return metadata, ciphertext
+
+    except EncryptionError:
+        raise
+    except Exception as e:
+        raise EncryptionError(f"Invalid encrypted file format: {e}") from e
+
 
