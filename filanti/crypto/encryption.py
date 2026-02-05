@@ -307,6 +307,8 @@ def encrypt_file(
     key: bytes,
     algorithm: EncryptionAlgorithm = DEFAULT_ALGORITHM,
     file_manager: FileManager | None = None,
+    remove_source: bool = False,
+    secure_delete: bool = True,
 ) -> EncryptionMetadata:
     """Encrypt a file using authenticated encryption.
 
@@ -316,6 +318,9 @@ def encrypt_file(
         key: Encryption key.
         algorithm: Encryption algorithm to use.
         file_manager: Optional FileManager instance.
+        remove_source: If True, delete original file after successful encryption.
+        secure_delete: If True and remove_source is True, securely overwrite
+            the original file before deletion (defense in depth).
 
     Returns:
         EncryptionMetadata for the encrypted file.
@@ -346,6 +351,13 @@ def encrypt_file(
         output = _build_encrypted_file(result.ciphertext, metadata)
         fm.write_bytes(output_path, output)
 
+        # Remove source file if requested
+        if remove_source:
+            if secure_delete:
+                fm.secure_delete(input_path)
+            else:
+                fm.delete(input_path)
+
         return metadata
 
     except (EncryptionError, FileOperationError):
@@ -365,6 +377,8 @@ def encrypt_file_with_password(
     algorithm: EncryptionAlgorithm = DEFAULT_ALGORITHM,
     kdf_params: KDFParams | None = None,
     file_manager: FileManager | None = None,
+    remove_source: bool = False,
+    secure_delete: bool = True,
 ) -> EncryptionMetadata:
     """Encrypt a file using a password.
 
@@ -375,6 +389,9 @@ def encrypt_file_with_password(
         algorithm: Encryption algorithm to use.
         kdf_params: Optional KDF parameters.
         file_manager: Optional FileManager instance.
+        remove_source: If True, delete original file after successful encryption.
+        secure_delete: If True and remove_source is True, securely overwrite
+            the original file before deletion (defense in depth).
 
     Returns:
         EncryptionMetadata for the encrypted file.
@@ -409,6 +426,13 @@ def encrypt_file_with_password(
         # Write encrypted file with header
         output = _build_encrypted_file(result.ciphertext, metadata)
         fm.write_bytes(output_path, output)
+
+        # Remove source file if requested
+        if remove_source:
+            if secure_delete:
+                fm.secure_delete(input_path)
+            else:
+                fm.delete(input_path)
 
         return metadata
 

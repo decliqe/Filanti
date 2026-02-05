@@ -273,6 +273,87 @@ class FileManager:
                 operation="delete",
             ) from e
 
+    def secure_delete(self, path: str | Path, passes: int = 3) -> None:
+        """Securely delete a file by overwriting before unlinking.
+
+        Overwrites file content with random data multiple times before
+        deletion. This provides defense-in-depth against data recovery.
+
+        Note: This is best-effort security. SSDs with wear-leveling,
+        journaling filesystems, and backup systems may retain copies.
+        For maximum security, use full-disk encryption.
+
+        Args:
+            path: Path to file to securely delete.
+            passes: Number of overwrite passes (default: 3).
+
+        Raises:
+            FileOperationError: If file cannot be deleted.
+            ValueError: If passes is less than 1.
+        """
+        import os
+        import secrets
+
+        if passes < 1:
+            raise ValueError("passes must be at least 1")
+
+        validated = self.validate_path(path)
+
+        if not validated.exists():
+            raise FileOperationError(
+                "File not found",
+                path=str(validated),
+                operation="secure_delete",
+            )
+
+        if not validated.is_file():
+            raise FileOperationError(
+                "Path is not a file",
+                path=str(validated),
+                operation="secure_delete",
+            )
+
+        try:
+            file_size = validated.stat().st_size
+
+            if file_size > 0:
+                # Overwrite with random data multiple times
+                for _ in range(passes):
+                    with open(validated, "r+b") as f:
+                        remaining = file_size
+                        while remaining > 0:
+                            chunk_size = min(remaining, self._buffer_size)
+                            f.write(secrets.token_bytes(chunk_size))
+                            remaining -= chunk_size
+                        f.flush()
+                        os.fsync(f.fileno())
+
+                # Final pass: overwrite with zeros
+                with open(validated, "r+b") as f:
+                    remaining = file_size
+                    while remaining > 0:
+                        chunk_size = min(remaining, self._buffer_size)
+                        f.write(b"\x00" * chunk_size)
+                        remaining -= chunk_size
+                    f.flush()
+                    os.fsync(f.fileno())
+
+            # Delete the file
+            validated.unlink()
+
+        except PermissionError as e:
+            raise FileOperationError(
+                "Permission denied",
+                path=str(validated),
+                operation="secure_delete",
+            ) from e
+        except OSError as e:
+            raise FileOperationError(
+                f"Failed to securely delete file: {e}",
+                path=str(validated),
+                operation="secure_delete",
+            ) from e
+
 
 # Default singleton instance for convenience
 _default_manager: FileManager | None = None
