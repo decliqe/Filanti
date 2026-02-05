@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "filanti"
-version = "1.0.0"
+version = "1.1.0"
 description = "A modular, security-focused file framework for encryption, hashing, and integrity verification"
 readme = "README.md"
 license = "MIT"

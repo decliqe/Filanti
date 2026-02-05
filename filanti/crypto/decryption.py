@@ -7,7 +7,6 @@ All decryption operations verify the authentication tag to ensure integrity.
 
 from pathlib import Path
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 from cryptography.exceptions import InvalidTag
 
 from filanti.core.errors import DecryptionError, FileOperationError

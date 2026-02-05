@@ -295,4 +295,3 @@ def validate_env_reference(value: str) -> tuple[bool, str | None]:
         return False, f"Environment variable '{env_var_name}' is empty"
 
     return True, None
-
