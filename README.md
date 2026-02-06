@@ -329,6 +329,15 @@ with SecureString("my-password") as pwd:
 
 Secure secret injection for automation and CI/CD workflows. Avoid hardcoding passwords in scripts or command lines.
 
+**Supported Patterns:**
+
+| Pattern | Description | Example |
+|---------|-------------|---------|
+| `ENV:VAR` | Unix-style (original) | `ENV:MY_PASSWORD` |
+| `$env:VAR` | PowerShell-style | `$env:MY_PASSWORD` |
+| `${VAR}` | Shell variable expansion | `${MY_PASSWORD}` |
+| `env.VAR` | Dot notation (cross-platform) | `env.MY_PASSWORD` |
+
 ```python
 import os
 from filanti.api import Filanti
@@ -336,12 +345,23 @@ from filanti.api import Filanti
 # Set secret in environment (done by CI/CD, Docker, etc.)
 os.environ["ENCRYPT_PASSWORD"] = "my-secure-password"
 
-# Use ENV reference - secret is resolved at runtime
-Filanti.encrypt("secret.txt", password="ENV:ENCRYPT_PASSWORD")
-Filanti.decrypt("secret.txt.enc", password="ENV:ENCRYPT_PASSWORD")
+# All patterns are supported
+Filanti.encrypt("secret.txt", password="ENV:ENCRYPT_PASSWORD")      # Unix-style
+Filanti.encrypt("secret.txt", password="$env:ENCRYPT_PASSWORD")     # PowerShell
+Filanti.encrypt("secret.txt", password="${ENCRYPT_PASSWORD}")       # Shell-style
+Filanti.encrypt("secret.txt", password="env.ENCRYPT_PASSWORD")      # Dot notation
+
+# Load secrets from .env file
+Filanti.load_dotenv(".env")
+Filanti.encrypt("secret.txt", password="ENV:SECRET_FROM_DOTENV")
+
+# Or load during encryption
+Filanti.encrypt("secret.txt", password="ENV:MY_KEY", dotenv_path=".env")
 
 # Check if value is an ENV reference
-Filanti.is_env_reference("ENV:MY_SECRET")  # True
+Filanti.is_env_reference("ENV:MY_SECRET")     # True
+Filanti.is_env_reference("$env:MY_SECRET")    # True
+Filanti.is_env_reference("${MY_SECRET}")      # True
 
 # Resolve secret manually
 password = Filanti.resolve_secret("ENV:ENCRYPT_PASSWORD")
@@ -362,11 +382,25 @@ safe = Filanti.safe_json_output(data, secret_keys=["password"])
 # Set environment variable
 export ENCRYPT_PASSWORD="my-secure-password"
 
-# Use in CLI commands
+# All pattern formats work in --password
 filanti encrypt secret.txt --password ENV:ENCRYPT_PASSWORD
-filanti decrypt secret.txt.enc --password ENV:ENCRYPT_PASSWORD
-filanti mac file.txt --key ENV:HMAC_KEY
-filanti sign document.pdf --key mykey --password ENV:KEY_PASSWORD
+filanti encrypt secret.txt --password '$env:ENCRYPT_PASSWORD'  # PowerShell
+filanti encrypt secret.txt --password '${ENCRYPT_PASSWORD}'    # Shell-style
+filanti encrypt secret.txt --password env.ENCRYPT_PASSWORD     # Dot notation
+
+# PowerShell-friendly --env option (no special characters)
+filanti encrypt secret.txt --env ENCRYPT_PASSWORD
+filanti decrypt secret.txt.enc --env ENCRYPT_PASSWORD
+
+# Load from .env file
+filanti encrypt secret.txt --dotenv .env --env-key MY_PASSWORD
+filanti mac file.txt --dotenv secrets.env --env-key HMAC_KEY
+
+# All secret-accepting commands support these options:
+#   --password   Literal or ENV pattern
+#   --env        Variable name (PowerShell-friendly)
+#   --dotenv     Path to .env file
+#   --env-key    Variable name from .env file
 ```
 
 **Benefits:**
@@ -374,6 +408,43 @@ filanti sign document.pdf --key mykey --password ENV:KEY_PASSWORD
 -  Works with CI/CD (GitHub Actions, GitLab CI, Jenkins)
 -  Compatible with Docker/Kubernetes secrets
 -  12-factor app compliance
+-  PowerShell-native syntax support
+-  Cross-platform .env file loading
+
+###  Secure File Deletion
+
+Delete original files securely after encryption/decryption operations.
+
+```python
+from filanti.api import Filanti
+
+# Encrypt and securely delete original
+Filanti.encrypt("secret.txt", password="my-pass", remove_source=True)
+# Original file is securely overwritten before deletion
+
+# Decrypt and remove encrypted file
+Filanti.decrypt("secret.txt.enc", password="my-pass", remove_source=True)
+# Encrypted file is securely deleted after decryption
+
+# Use faster (non-secure) deletion
+Filanti.encrypt("secret.txt", password="my-pass", 
+                remove_source=True, secure_delete=False)
+```
+
+**CLI Support:**
+
+```bash
+# Encrypt and securely delete original
+filanti encrypt secret.txt --password mypass --remove-source
+
+# Decrypt and remove encrypted file
+filanti decrypt secret.txt.enc --password mypass --remove-source
+
+# Use faster (non-secure) deletion
+filanti encrypt secret.txt --password mypass --remove-source --no-secure-delete
+```
+
+> ⚠️ **Note:** Secure deletion provides defense-in-depth but has limitations on SSDs with wear-leveling, journaling filesystems, and cloud-synced folders. For maximum security, use full-disk encryption.
 
 ###  Asymmetric / Hybrid Encryption
 

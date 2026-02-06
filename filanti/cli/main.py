@@ -9,6 +9,7 @@ Supports ENV-based secret resolution:
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Annotated, Optional
@@ -58,9 +59,127 @@ from filanti.core.secrets import (
     resolve_secret,
     is_env_reference,
     redact_secret,
+    load_dotenv,
     REDACTED_PLACEHOLDER,
 )
 from filanti.core.errors import SecretError
+
+
+# Common type annotations for secret-related options
+EnvVarOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--env",
+        help="Environment variable name (PowerShell-friendly). Equivalent to --password ENV:VAR",
+    ),
+]
+
+DotenvOption = Annotated[
+    Optional[Path],
+    typer.Option(
+        "--dotenv",
+        help="Path to .env file to load secrets from",
+    ),
+]
+
+EnvKeyOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--env-key",
+        help="Variable name from .env file to use as secret",
+    ),
+]
+
+
+def resolve_password_from_options(
+    password: Optional[str] = None,
+    env_var: Optional[str] = None,
+    dotenv_path: Optional[Path] = None,
+    env_key: Optional[str] = None,
+    prompt: bool = True,
+    confirm: bool = True,
+    prompt_text: str = "Password",
+) -> Optional[str]:
+    """Resolve password from multiple sources with priority.
+
+    Priority order:
+    1. --password (literal or ENV reference)
+    2. --env VAR_NAME (PowerShell-friendly)
+    3. --env-key KEY_FROM_DOTENV
+    4. Interactive prompt (if prompt=True)
+
+    Args:
+        password: Password value or ENV reference
+        env_var: Environment variable name (PowerShell-friendly)
+        dotenv_path: Path to .env file
+        env_key: Key name from .env file
+        prompt: Whether to prompt interactively if no password found
+        confirm: Whether to confirm password when prompting
+        prompt_text: Text to display when prompting
+
+    Returns:
+        Resolved password string, or None if not found and prompt=False
+
+    Raises:
+        SecretError: If ENV reference cannot be resolved
+    """
+    # Load .env file if provided
+    loaded_vars: dict[str, str] = {}
+    if dotenv_path is not None:
+        loaded_vars = load_dotenv(dotenv_path, override=False)
+
+    resolved_password: Optional[str] = None
+
+    # Priority 1: --password (literal or ENV reference)
+    if password is not None:
+        resolved_password = resolve_secret(password)
+
+    # Priority 2: --env VAR_NAME (PowerShell-friendly)
+    elif env_var is not None:
+        resolved_password = resolve_secret(f"ENV:{env_var}")
+
+    # Priority 3: --env-key KEY_FROM_DOTENV
+    elif env_key is not None:
+        if env_key in loaded_vars:
+            resolved_password = loaded_vars[env_key]
+        elif env_key in os.environ:
+            resolved_password = os.environ[env_key]
+        else:
+            raise SecretError(
+                f"Variable '{env_key}' not found in .env file or environment",
+                env_var=env_key,
+            )
+
+    # Priority 4: Interactive prompt
+    if resolved_password is None and prompt:
+        resolved_password = typer.prompt(prompt_text, hide_input=True)
+        if confirm:
+            confirm_password = typer.prompt(f"Confirm {prompt_text.lower()}", hide_input=True)
+            if resolved_password != confirm_password:
+                output_error(f"{prompt_text}s do not match")
+                return None  # Will never reach here due to exit
+
+    return resolved_password
+
+
+def resolve_key_from_options(
+    key: Optional[str] = None,
+    env_var: Optional[str] = None,
+    dotenv_path: Optional[Path] = None,
+    env_key: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve secret key from multiple sources (no prompting).
+
+    Same priority as resolve_password_from_options but without interactive prompt.
+    """
+    return resolve_password_from_options(
+        password=key,
+        env_var=env_var,
+        dotenv_path=dotenv_path,
+        env_key=env_key,
+        prompt=False,
+        confirm=False,
+    )
 
 
 # Create main CLI app
@@ -210,9 +329,12 @@ def encrypt(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Encryption password (prompted if not provided). Supports ENV:VAR_NAME syntax.",
+            help="Encryption password (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
     ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
     algorithm: Annotated[
         str,
         typer.Option(
@@ -220,31 +342,54 @@ def encrypt(
             help="Encryption algorithm (aes-256-gcm, chacha20-poly1305)",
         )
     ] = "aes-256-gcm",
+    remove_source: Annotated[
+        bool,
+        typer.Option(
+            "--remove-source",
+            help="Delete original file after successful encryption",
+        )
+    ] = False,
+    secure_delete: Annotated[
+        bool,
+        typer.Option(
+            "--secure-delete/--no-secure-delete",
+            help="Securely overwrite original file before deletion (when --remove-source is used)",
+        )
+    ] = True,
 ) -> None:
     """Encrypt a file with password-based encryption.
 
     Uses Argon2id for key derivation and authenticated encryption.
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti encrypt file.txt --password ENV:MY_PASSWORD
+        filanti encrypt file.txt --password '$env:MY_PASSWORD'  # PowerShell
+        filanti encrypt file.txt --password '${MY_PASSWORD}'    # Shell-style
+        filanti encrypt file.txt --password env.MY_PASSWORD     # Dot notation
+        filanti encrypt file.txt --env MY_PASSWORD              # PowerShell-friendly
+        filanti encrypt file.txt --dotenv .env --env-key MY_PASSWORD
+
+    Source file deletion:
+        filanti encrypt file.txt --password secret --remove-source
+        filanti encrypt file.txt --password secret --remove-source --no-secure-delete
     """
     try:
-        # Resolve password from ENV if needed
-        resolved_password = None
-        if password is not None:
-            try:
-                resolved_password = resolve_secret(password)
-            except SecretError as e:
-                output_error(str(e))
-                return  # Never reached, but satisfies static analysis
+        # Resolve password using helper
+        try:
+            resolved_password = resolve_password_from_options(
+                password=password,
+                env_var=env_var,
+                dotenv_path=dotenv,
+                env_key=env_key,
+                prompt=True,
+                confirm=True,
+            )
+        except SecretError as e:
+            output_error(str(e))
+            return
 
-        # Prompt for password if not provided
         if resolved_password is None:
-            resolved_password = typer.prompt("Password", hide_input=True)
-            confirm = typer.prompt("Confirm password", hide_input=True)
-            if resolved_password != confirm:
-                output_error("Passwords do not match")
-                return
+            return  # Error already output
 
         # Determine output path
         out_path = output or Path(str(file) + ".enc")
@@ -262,15 +407,23 @@ def encrypt(
             output_path=out_path,
             password=resolved_password,
             algorithm=enc_alg,
+            remove_source=remove_source,
+            secure_delete=secure_delete,
         )
 
-        output_json({
+        result = {
             "success": True,
             "input": str(file.resolve()),
             "output": str(out_path.resolve()),
             "algorithm": metadata.algorithm,
             "kdf": metadata.kdf_algorithm,
-        })
+        }
+
+        if remove_source:
+            result["source_removed"] = True
+            result["secure_delete"] = secure_delete
+
+        output_json(result)
 
     except typer.Exit:
         raise
@@ -301,29 +454,59 @@ def decrypt(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Decryption password (prompted if not provided). Supports ENV:VAR_NAME syntax.",
+            help="Decryption password (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
     ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
+    remove_source: Annotated[
+        bool,
+        typer.Option(
+            "--remove-source",
+            help="Delete encrypted file after successful decryption",
+        )
+    ] = False,
+    secure_delete: Annotated[
+        bool,
+        typer.Option(
+            "--secure-delete/--no-secure-delete",
+            help="Securely overwrite encrypted file before deletion (when --remove-source is used)",
+        )
+    ] = True,
 ) -> None:
     """Decrypt a file encrypted with Filanti.
 
     Verifies integrity before writing output.
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti decrypt file.enc --password ENV:MY_PASSWORD
+        filanti decrypt file.enc --password '$env:MY_PASSWORD'  # PowerShell
+        filanti decrypt file.enc --env MY_PASSWORD              # PowerShell-friendly
+        filanti decrypt file.enc --dotenv .env --env-key MY_PASSWORD
+
+    Encrypted file deletion:
+        filanti decrypt file.enc --password secret --remove-source
+        filanti decrypt file.enc --password secret --remove-source --no-secure-delete
     """
     try:
-        # Resolve password from ENV if needed
-        resolved_password = None
-        if password is not None:
-            try:
-                resolved_password = resolve_secret(password)
-            except SecretError as e:
-                output_error(str(e))
+        # Resolve password using helper
+        try:
+            resolved_password = resolve_password_from_options(
+                password=password,
+                env_var=env_var,
+                dotenv_path=dotenv,
+                env_key=env_key,
+                prompt=True,
+                confirm=False,
+                prompt_text="Password",
+            )
+        except SecretError as e:
+            output_error(str(e))
+            return
 
-        # Prompt for password if not provided
         if resolved_password is None:
-            resolved_password = typer.prompt("Password", hide_input=True)
+            return  # Error already output
 
         # Determine output path
         if output is None:
@@ -342,12 +525,27 @@ def decrypt(
             password=resolved_password,
         )
 
-        output_json({
+        # Remove encrypted source file if requested (after successful decryption)
+        if remove_source:
+            from filanti.core.file_manager import get_file_manager
+            fm = get_file_manager()
+            if secure_delete:
+                fm.secure_delete(file)
+            else:
+                fm.delete(file)
+
+        result = {
             "success": True,
             "input": str(file.resolve()),
             "output": str(out_path.resolve()),
             "size": size,
-        })
+        }
+
+        if remove_source:
+            result["source_removed"] = True
+            result["secure_delete"] = secure_delete
+
+        output_json(result)
 
     except typer.Exit:
         raise
@@ -403,12 +601,15 @@ def mac(
         )
     ],
     key: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--key", "-k",
-            help="Secret key for HMAC (hex or text). Supports ENV:VAR_NAME syntax.",
+            help="Secret key for HMAC (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
-    ],
+    ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
     algorithm: Annotated[
         str,
         typer.Option(
@@ -430,21 +631,43 @@ def mac(
             help="Create detached integrity file (.mac)",
         )
     ] = False,
+    minimal: Annotated[
+        bool,
+        typer.Option(
+            "--minimal",
+            help="Use minimal metadata format (reduces information leakage - no filename, size, timestamp)",
+        )
+    ] = False,
 ) -> None:
     """Compute HMAC of a file for integrity verification.
 
     Supported algorithms: hmac-sha256, hmac-sha384, hmac-sha512, hmac-sha3-256, hmac-blake2b
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti mac file.txt --key ENV:HMAC_KEY
+        filanti mac file.txt --key '$env:HMAC_KEY'   # PowerShell
+        filanti mac file.txt --env HMAC_KEY          # PowerShell-friendly
+        filanti mac file.txt --dotenv .env --env-key HMAC_KEY
+
+    Minimal metadata format (for security):
+        filanti mac file.txt --key secret --create-file --minimal
     """
     try:
-        # Resolve key from ENV if needed
+        # Resolve key using helper (no prompting for MAC key)
         try:
-            resolved_key = resolve_secret(key)
+            resolved_key = resolve_key_from_options(
+                key=key,
+                env_var=env_var,
+                dotenv_path=dotenv,
+                env_key=env_key,
+            )
         except SecretError as e:
             output_error(str(e))
-            return  # Never reached, but satisfies static analysis
+            return
+
+        if resolved_key is None:
+            output_error("Secret key is required. Use --key, --env, or --env-key")
+            return
 
         # Parse key - try hex first, then treat as text
         try:
@@ -459,13 +682,17 @@ def mac(
                 key_bytes,
                 algorithm,
                 output,
+                minimal=minimal,
             )
-            output_json({
+            result_data = {
                 "success": True,
                 "file": str(file.resolve()),
                 "algorithm": algorithm.lower(),
                 "mac_file": str(mac_path.resolve()),
-            })
+            }
+            if minimal:
+                result_data["format"] = "minimal"
+            output_json(result_data)
         else:
             # Just compute and display MAC
             result = compute_file_mac(file, key_bytes, algorithm)
@@ -494,12 +721,15 @@ def verify_mac_cmd(
         )
     ],
     key: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--key", "-k",
-            help="Secret key for HMAC (hex or text). Supports ENV:VAR_NAME syntax.",
+            help="Secret key for HMAC (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
-    ],
+    ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
     expected: Annotated[
         Optional[str],
         typer.Option(
@@ -519,16 +749,28 @@ def verify_mac_cmd(
 
     Either provide --expected MAC value or --mac-file with detached metadata.
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti verify-mac file.txt --key ENV:HMAC_KEY
+        filanti verify-mac file.txt --key '$env:HMAC_KEY'  # PowerShell
+        filanti verify-mac file.txt --env HMAC_KEY         # PowerShell-friendly
+        filanti verify-mac file.txt --dotenv .env --env-key HMAC_KEY
     """
     try:
-        # Resolve key from ENV if needed
+        # Resolve key using helper
         try:
-            resolved_key = resolve_secret(key)
+            resolved_key = resolve_key_from_options(
+                key=key,
+                env_var=env_var,
+                dotenv_path=dotenv,
+                env_key=env_key,
+            )
         except SecretError as e:
             output_error(str(e))
-            return  # Never reached, but satisfies static analysis
+            return
+
+        if resolved_key is None:
+            output_error("Secret key is required. Use --key, --env, or --env-key")
+            return
 
         # Parse key
         try:
@@ -584,9 +826,12 @@ def keygen(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Password to protect private key. Supports ENV:VAR_NAME syntax.",
+            help="Password to protect private key (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
     ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
     protect: Annotated[
         bool,
         typer.Option(
@@ -599,17 +844,28 @@ def keygen(
 
     Creates private key at OUTPUT and public key at OUTPUT.pub
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti keygen mykey --protect --password ENV:KEY_PASSWORD
+        filanti keygen mykey --protect --password '$env:KEY_PASSWORD'  # PowerShell
+        filanti keygen mykey --protect --env KEY_PASSWORD              # PowerShell-friendly
+        filanti keygen mykey --protect --dotenv .env --env-key KEY_PASSWORD
     """
     try:
-        # Resolve password from ENV if needed
+        # Resolve password using helper
         resolved_password = None
-        if password is not None:
+        if password is not None or env_var is not None or env_key is not None:
             try:
-                resolved_password = resolve_secret(password)
+                resolved_password = resolve_password_from_options(
+                    password=password,
+                    env_var=env_var,
+                    dotenv_path=dotenv,
+                    env_key=env_key,
+                    prompt=False,
+                    confirm=False,
+                )
             except SecretError as e:
                 output_error(str(e))
+                return
 
         # Handle password - prompt if protect is set but no password provided
         if protect and resolved_password is None:
@@ -617,6 +873,7 @@ def keygen(
             confirm = typer.prompt("Confirm password", hide_input=True)
             if resolved_password != confirm:
                 output_error("Passwords do not match")
+                return
 
         password_bytes = resolved_password.encode("utf-8") if resolved_password else None
 
@@ -676,9 +933,12 @@ def sign(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Password for encrypted private key. Supports ENV:VAR_NAME syntax.",
+            help="Password for encrypted private key (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
     ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
     embed_key: Annotated[
         bool,
         typer.Option(
@@ -691,17 +951,28 @@ def sign(
 
     Creates a detached signature file (.sig) containing the signature and metadata.
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti sign file.txt --key mykey --password ENV:KEY_PASSWORD
+        filanti sign file.txt --key mykey --password '$env:KEY_PASSWORD'  # PowerShell
+        filanti sign file.txt --key mykey --env KEY_PASSWORD              # PowerShell-friendly
+        filanti sign file.txt --key mykey --dotenv .env --env-key KEY_PASSWORD
     """
     try:
-        # Resolve password from ENV if needed
+        # Resolve password using helper
         resolved_password = None
-        if password is not None:
+        if password is not None or env_var is not None or env_key is not None:
             try:
-                resolved_password = resolve_secret(password)
+                resolved_password = resolve_password_from_options(
+                    password=password,
+                    env_var=env_var,
+                    dotenv_path=dotenv,
+                    env_key=env_key,
+                    prompt=False,
+                    confirm=False,
+                )
             except SecretError as e:
                 output_error(str(e))
+                return
 
         # Read private key
         private_key = key.read_bytes()
@@ -941,9 +1212,12 @@ def keygen_asymmetric(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Password to protect private key. Supports ENV:VAR_NAME syntax.",
+            help="Password to protect private key (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
     ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
     protect: Annotated[
         bool,
         typer.Option(
@@ -966,15 +1240,25 @@ def keygen_asymmetric(
     X25519 is recommended for most use cases (fast, secure, compact keys).
     RSA-OAEP is provided for compatibility.
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti keygen-asymmetric mykey --protect --password ENV:KEY_PASSWORD
+        filanti keygen-asymmetric mykey --protect --password '$env:KEY_PASSWORD'  # PowerShell
+        filanti keygen-asymmetric mykey --protect --env KEY_PASSWORD              # PowerShell-friendly
+        filanti keygen-asymmetric mykey --protect --dotenv .env --env-key KEY_PASSWORD
     """
     try:
-        # Resolve password from ENV if needed
+        # Resolve password using helper
         resolved_password = None
-        if password is not None:
+        if password is not None or env_var is not None or env_key is not None:
             try:
-                resolved_password = resolve_secret(password)
+                resolved_password = resolve_password_from_options(
+                    password=password,
+                    env_var=env_var,
+                    dotenv_path=dotenv,
+                    env_key=env_key,
+                    prompt=False,
+                    confirm=False,
+                )
             except SecretError as e:
                 output_error(str(e))
                 return
@@ -1047,6 +1331,20 @@ def encrypt_pubkey(
             help="Recipient identifier (one per pubkey, in order)",
         )
     ] = None,
+    remove_source: Annotated[
+        bool,
+        typer.Option(
+            "--remove-source",
+            help="Delete original file after successful encryption",
+        )
+    ] = False,
+    secure_delete: Annotated[
+        bool,
+        typer.Option(
+            "--secure-delete/--no-secure-delete",
+            help="Securely overwrite original file before deletion (when --remove-source is used)",
+        )
+    ] = True,
 ) -> None:
     """Encrypt a file for specific recipients using public keys.
 
@@ -1062,6 +1360,9 @@ def encrypt_pubkey(
 
         # With recipient IDs
         filanti encrypt-pubkey secret.txt --pubkey alice.pub -r alice --pubkey bob.pub -r bob
+
+        # With source file removal
+        filanti encrypt-pubkey secret.txt --pubkey alice.pub --remove-source
     """
     try:
         # Validate pubkeys
@@ -1094,16 +1395,24 @@ def encrypt_pubkey(
             recipient_public_keys=pubkey_paths,
             algorithm=asym_alg,
             recipient_ids=recipient_id,
+            remove_source=remove_source,
+            secure_delete=secure_delete,
         )
 
-        output_json({
+        result = {
             "success": True,
             "input": str(file.resolve()),
             "output": str(out_path.resolve()),
             "asymmetric_algorithm": metadata.asymmetric_algorithm,
             "symmetric_algorithm": metadata.symmetric_algorithm,
             "recipient_count": metadata.recipient_count,
-        })
+        }
+
+        if remove_source:
+            result["source_removed"] = True
+            result["secure_delete"] = secure_delete
+
+        output_json(result)
 
     except Exception as e:
         output_error(str(e))
@@ -1140,9 +1449,12 @@ def decrypt_privkey(
         Optional[str],
         typer.Option(
             "--password", "-p",
-            help="Password for encrypted private key. Supports ENV:VAR_NAME syntax.",
+            help="Password for encrypted private key (supports: ENV:VAR, $env:VAR, ${VAR}, env.VAR)",
         )
     ] = None,
+    env_var: EnvVarOption = None,
+    dotenv: DotenvOption = None,
+    env_key: EnvKeyOption = None,
     recipient_id: Annotated[
         Optional[str],
         typer.Option(
@@ -1150,13 +1462,30 @@ def decrypt_privkey(
             help="Recipient ID to use for decryption (for multi-recipient files)",
         )
     ] = None,
+    remove_source: Annotated[
+        bool,
+        typer.Option(
+            "--remove-source",
+            help="Delete encrypted file after successful decryption",
+        )
+    ] = False,
+    secure_delete: Annotated[
+        bool,
+        typer.Option(
+            "--secure-delete/--no-secure-delete",
+            help="Securely overwrite encrypted file before deletion (when --remove-source is used)",
+        )
+    ] = True,
 ) -> None:
     """Decrypt a file encrypted with public key encryption.
 
     Decrypts files created with 'encrypt-pubkey' command.
 
-    Supports ENV-based secret resolution:
+    Supports multiple secret resolution formats:
         filanti decrypt-privkey file.henc --privkey mykey --password ENV:KEY_PASSWORD
+        filanti decrypt-privkey file.henc --privkey mykey --password '$env:KEY_PASSWORD'  # PowerShell
+        filanti decrypt-privkey file.henc --privkey mykey --env KEY_PASSWORD              # PowerShell-friendly
+        filanti decrypt-privkey file.henc --privkey mykey --dotenv .env --env-key KEY_PASSWORD
 
     Examples:
         # Basic decryption
@@ -1164,13 +1493,23 @@ def decrypt_privkey(
 
         # With encrypted private key
         filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password mypass
+
+        # Remove encrypted file after decryption
+        filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --remove-source
     """
     try:
-        # Resolve password from ENV if needed
+        # Resolve password using helper
         resolved_password = None
-        if password is not None:
+        if password is not None or env_var is not None or env_key is not None:
             try:
-                resolved_password = resolve_secret(password)
+                resolved_password = resolve_password_from_options(
+                    password=password,
+                    env_var=env_var,
+                    dotenv_path=dotenv,
+                    env_key=env_key,
+                    prompt=False,
+                    confirm=False,
+                )
             except SecretError as e:
                 output_error(str(e))
                 return
@@ -1196,12 +1535,27 @@ def decrypt_privkey(
             recipient_id=recipient_id,
         )
 
-        output_json({
+        # Remove encrypted source file if requested (after successful decryption)
+        if remove_source:
+            from filanti.core.file_manager import get_file_manager
+            fm = get_file_manager()
+            if secure_delete:
+                fm.secure_delete(file)
+            else:
+                fm.delete(file)
+
+        result = {
             "success": True,
             "input": str(file.resolve()),
             "output": str(out_path.resolve()),
             "size": size,
-        })
+        }
+
+        if remove_source:
+            result["source_removed"] = True
+            result["secure_delete"] = secure_delete
+
+        output_json(result)
 
     except Exception as e:
         output_error(str(e))

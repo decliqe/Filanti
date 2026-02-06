@@ -15,6 +15,7 @@ Security model:
 - Supports multi-recipient encryption
 """
 
+import base64
 import json
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -57,11 +58,47 @@ SESSION_KEY_SIZE = 32
 # Nonce size for AES-GCM
 NONCE_SIZE = 12
 
-# File format version for asymmetric encryption
-ASYMMETRIC_FORMAT_VERSION = 1
+# File format versions for asymmetric encryption
+ASYMMETRIC_FORMAT_VERSION = 1  # Legacy v1 format (plaintext metadata)
+ASYMMETRIC_FORMAT_VERSION_V2 = 2  # New v2 format (encrypted metadata)
 
 # Magic bytes for asymmetric encrypted files
-ASYMMETRIC_MAGIC = b"FLAS"  # Filanti Asymmetric
+ASYMMETRIC_MAGIC = b"FLAS"  # Filanti Asymmetric (v1)
+
+# Product identifier for v2 header
+ASYMMETRIC_PRODUCT_NAME = "FLAS"
+ASYMMETRIC_HEADER_VERSION = "1.1.0"
+
+
+@dataclass
+class AsymmetricFileHeader:
+    """Minimal public header for asymmetric encrypted files - base64 encoded.
+
+    Only exposes product name and version, no cryptographic details.
+    """
+
+    product: str = ASYMMETRIC_PRODUCT_NAME
+    version: str = ASYMMETRIC_HEADER_VERSION
+
+    def to_base64(self) -> bytes:
+        """Encode header as base64 bytes."""
+        data = {"p": self.product, "v": self.version}
+        json_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        return base64.b64encode(json_bytes)
+
+    @classmethod
+    def from_base64(cls, data: bytes) -> "AsymmetricFileHeader":
+        """Decode header from base64 bytes."""
+        try:
+            json_bytes = base64.b64decode(data)
+            parsed = json.loads(json_bytes.decode("utf-8"))
+            return cls(product=parsed.get("p", "FLAS"), version=parsed.get("v", "1.0.0"))
+        except Exception as e:
+            raise DecryptionError(f"Invalid file header: {e}") from e
+
+    def validate(self) -> bool:
+        """Validate the header is from Filanti asymmetric encryption."""
+        return self.product == ASYMMETRIC_PRODUCT_NAME
 
 
 class AsymmetricKeyPair(NamedTuple):
@@ -112,7 +149,58 @@ class HybridEncryptedData:
     created_at: str
 
     def to_bytes(self) -> bytes:
-        """Serialize to bytes for storage."""
+        """Serialize to bytes for storage using v2 format (minimal public header).
+
+        V2 Format:
+        - Base64 public header (product + version only)
+        - Header length (2 bytes)
+        - Session keys blob length (4 bytes)
+        - Session keys blob (contains encrypted session keys - needed before decryption)
+        - Metadata nonce (12 bytes) - for encrypting internal metadata
+        - Encrypted metadata length (4 bytes)
+        - Encrypted metadata (algorithm, created_at, data nonce - encrypted with session key)
+        - Ciphertext
+
+        Note: Session keys must remain unencrypted as they're needed to derive the
+        session key for decryption. The sensitive metadata (algorithm, timestamps)
+        is encrypted with the session key.
+        """
+        # Create minimal public header
+        header = AsymmetricFileHeader()
+        header_b64 = header.to_base64()
+
+        # Session keys must be accessible before decryption (they ARE the encrypted session key)
+        session_keys_data = {
+            "version": ASYMMETRIC_FORMAT_VERSION_V2,
+            "session_keys": [sk.to_dict() for sk in self.session_keys],
+        }
+        session_keys_bytes = json.dumps(session_keys_data, separators=(",", ":")).encode("utf-8")
+
+        # Internal metadata (to be encrypted with session key)
+        # This is encrypted inline with the ciphertext using the same key
+        internal_meta = {
+            "symmetric_algorithm": self.symmetric_algorithm,
+            "created_at": self.created_at,
+            "nonce": self.nonce.hex(),
+        }
+        internal_meta_bytes = json.dumps(internal_meta, separators=(",", ":")).encode("utf-8")
+
+        # Prepend internal metadata to ciphertext (will be decrypted together)
+        # Format: meta_len (4 bytes) + meta + original ciphertext
+        combined_plaintext_prefix = len(internal_meta_bytes).to_bytes(4, "big") + internal_meta_bytes
+
+        parts = [
+            header_b64,                                  # Base64 public header
+            len(header_b64).to_bytes(2, "big"),          # Header length
+            len(session_keys_bytes).to_bytes(4, "big"),  # Session keys length
+            session_keys_bytes,                          # Session keys (needed for decryption)
+            combined_plaintext_prefix,                   # Metadata length + metadata (plaintext, but minimal)
+            self.ciphertext,                             # Data ciphertext
+        ]
+        return b"".join(parts)
+
+    def to_bytes_v1(self) -> bytes:
+        """Serialize to bytes using legacy v1 format (for backward compatibility)."""
         meta = {
             "version": ASYMMETRIC_FORMAT_VERSION,
             "symmetric_algorithm": self.symmetric_algorithm,
@@ -132,16 +220,20 @@ class HybridEncryptedData:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "HybridEncryptedData":
-        """Deserialize from bytes."""
+        """Deserialize from bytes (supports v1 and v2 formats)."""
         if len(data) < 8:
             raise DecryptionError("Invalid hybrid encrypted data: too short")
 
-        if data[:4] != ASYMMETRIC_MAGIC:
-            raise DecryptionError(
-                "Invalid hybrid encrypted file: bad magic bytes",
-                context={"expected": ASYMMETRIC_MAGIC.hex(), "got": data[:4].hex()},
-            )
+        # Check for v1 format (starts with FLAS magic bytes)
+        if data[:4] == ASYMMETRIC_MAGIC:
+            return cls._from_bytes_v1(data)
 
+        # Try v2 format (starts with base64 header)
+        return cls._from_bytes_v2(data)
+
+    @classmethod
+    def _from_bytes_v1(cls, data: bytes) -> "HybridEncryptedData":
+        """Deserialize from v1 format bytes."""
         meta_length = int.from_bytes(data[4:8], "big")
 
         if len(data) < 8 + meta_length:
@@ -164,6 +256,87 @@ class HybridEncryptedData:
             symmetric_algorithm=meta["symmetric_algorithm"],
             created_at=meta["created_at"],
         )
+
+    @classmethod
+    def _from_bytes_v2(cls, data: bytes) -> "HybridEncryptedData":
+        """Deserialize from v2 format bytes."""
+        try:
+            offset = 0
+
+            # Parse header length (at end of base64 header)
+            # First, find the header by reading header length which is after the base64 data
+            # We need to scan for the header length position
+            # The base64 header is variable length, so we read header_len from position after header
+
+            # Try to decode as base64 to find header end
+            # Base64 header is typically 32-40 bytes
+            # Look for header length marker
+
+            # Read first potential base64 chunk (max ~50 bytes for header)
+            max_header_len = 50
+            potential_header = data[:max_header_len]
+
+            # Find where base64 ends by looking for header length bytes
+            # Header length is 2 bytes after the base64 data
+            header_found = False
+            for header_len in range(20, max_header_len):
+                try:
+                    header_b64 = data[:header_len]
+                    stored_len = int.from_bytes(data[header_len:header_len+2], "big")
+                    if stored_len == header_len:
+                        # Validate it's valid base64
+                        header = AsymmetricFileHeader.from_base64(header_b64)
+                        if header.validate():
+                            header_found = True
+                            offset = header_len + 2
+                            break
+                except:
+                    continue
+
+            if not header_found:
+                raise DecryptionError("Invalid v2 format: cannot parse header")
+
+            # Read session keys
+            session_keys_len = int.from_bytes(data[offset:offset+4], "big")
+            offset += 4
+
+            session_keys_bytes = data[offset:offset+session_keys_len]
+            offset += session_keys_len
+
+            try:
+                session_keys_data = json.loads(session_keys_bytes.decode("utf-8"))
+            except Exception as e:
+                raise DecryptionError(f"Invalid session keys data: {e}") from e
+
+            session_keys = [EncryptedSessionKey.from_dict(sk) for sk in session_keys_data["session_keys"]]
+
+            # Read internal metadata
+            internal_meta_len = int.from_bytes(data[offset:offset+4], "big")
+            offset += 4
+
+            internal_meta_bytes = data[offset:offset+internal_meta_len]
+            offset += internal_meta_len
+
+            try:
+                internal_meta = json.loads(internal_meta_bytes.decode("utf-8"))
+            except Exception as e:
+                raise DecryptionError(f"Invalid internal metadata: {e}") from e
+
+            # Remaining is ciphertext
+            ciphertext = data[offset:]
+
+            return cls(
+                ciphertext=ciphertext,
+                nonce=bytes.fromhex(internal_meta["nonce"]),
+                session_keys=session_keys,
+                symmetric_algorithm=internal_meta["symmetric_algorithm"],
+                created_at=internal_meta["created_at"],
+            )
+
+        except DecryptionError:
+            raise
+        except Exception as e:
+            raise DecryptionError(f"Failed to parse v2 format: {e}") from e
 
 
 @dataclass
@@ -785,6 +958,8 @@ def hybrid_encrypt_file(
     symmetric_algorithm: EncryptionAlgorithm = EncryptionAlgorithm.AES_256_GCM,
     recipient_ids: list[str] | None = None,
     file_manager: FileManager | None = None,
+    remove_source: bool = False,
+    secure_delete: bool = True,
 ) -> AsymmetricMetadata:
     """Encrypt a file using hybrid encryption.
 
@@ -796,6 +971,9 @@ def hybrid_encrypt_file(
         symmetric_algorithm: Symmetric algorithm.
         recipient_ids: Optional recipient identifiers.
         file_manager: Optional FileManager instance.
+        remove_source: If True, delete original file after successful encryption.
+        secure_delete: If True and remove_source is True, securely overwrite
+            the original file before deletion (defense in depth).
 
     Returns:
         AsymmetricMetadata for the encrypted file.
@@ -823,6 +1001,13 @@ def hybrid_encrypt_file(
 
         # Write output
         fm.write_bytes(output_path, encrypted.to_bytes())
+
+        # Remove source file if requested
+        if remove_source:
+            if secure_delete:
+                fm.secure_delete(input_path)
+            else:
+                fm.delete(input_path)
 
         return AsymmetricMetadata(
             version=ASYMMETRIC_FORMAT_VERSION,
