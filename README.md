@@ -1207,7 +1207,7 @@ encrypt_stream_file(input_path, output_path, key, chunk_size=16*1024)   # 16 KB
 ### Development Setup
 
 ```bash
-git clone https://github.com/decliqe/FILANTI.git
+git clone https://github.com/decliqe/Filanti.git
 cd filanti
 pip install -e ".[dev]"
 ```
@@ -1251,8 +1251,45 @@ pip install -e ".[dev]"
 
 ## Changelog
 
-### v1.0.0 (2026-01-16)
 
+```markdown
+## v1.0.0 (2026-01-16)
+## [1.1.0] - 2026-02-06
+
+### Added
+- **Secret Resolution**: Support for PowerShell-style `$env:VAR` syntax
+- **Secret Resolution**: Support for shell-style `${VAR}` syntax
+- **Secret Resolution**: Support for dot notation `env.VAR` syntax
+- **Secret Resolution**: `.env` file loading via `load_dotenv()`
+- **CLI**: `--env` option for PowerShell-friendly secret resolution (all secret commands)
+- **CLI**: `--dotenv` option to load secrets from .env files (all secret commands)
+- **CLI**: `--env-key` option to select specific variable from .env
+- **CLI**: `--remove-source` option to delete original after encryption
+- **Encryption**: `remove_source` and `secure_delete` parameters
+- **Integrity**: Encrypted `.mac` sidecar file option
+- **FileManager**: `secure_delete()` method with multi-pass overwrite
+
+### Changed
+- **File Format**: Symmetric encryption metadata is now encrypted (v2 format)
+- **File Format**: Asymmetric/hybrid encryption metadata is now encrypted (v2 format)
+- **File Format**: Minimal public header (base64 encoded product + version only)
+- **Integrity**: Reduced metadata in `.mac` files (optional)
+- Backward compatible: All v1 format files can still be read
+
+### Security
+- Reduced information leakage in encrypted files
+- Reduced information leakage in hybrid encrypted files
+- Added secure deletion option for source files
+- All secret-accepting commands support multiple ENV reference formats
+
+### Commands Updated
+- `encrypt`, `decrypt`: Full ENV pattern support
+- `mac`, `verify-mac`: Full ENV pattern support
+- `keygen`, `sign`: Full ENV pattern support
+- `keygen-asymmetric`, `decrypt-pubkey`: Full ENV pattern support
+```
+
+---
 [//]: # (**Phase 1 - Foundation**)
 
 [//]: # (- Project scaffolding and architecture)
@@ -1379,7 +1416,7 @@ MIT License
 
 <p align="center">
 
-  Made by Decliqe
+  Maintained by Decliqe
 
 </p>
 
