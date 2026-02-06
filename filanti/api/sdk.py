@@ -406,6 +406,8 @@ class Filanti:
         key: bytes | None = None,
         output: str | Path | None = None,
         dotenv_path: str | Path | None = None,
+        remove_source: bool = False,
+        secure_delete: bool = True,
     ) -> DecryptResult:
         """Decrypt a file.
 
@@ -423,6 +425,9 @@ class Filanti:
             key: Raw encryption key.
             output: Output path (default: removes .enc extension).
             dotenv_path: Optional path to .env file to load secrets from.
+            remove_source: If True, delete encrypted file after successful decryption.
+            secure_delete: If True and remove_source is True, securely overwrite
+                the encrypted file before deletion.
 
         Returns:
             DecryptResult with output path and size.
@@ -446,6 +451,15 @@ class Filanti:
             size = decrypt_file(path, out_path, key)
         else:
             raise ValueError("Must provide either password or key")
+
+        # Remove encrypted source file if requested
+        if remove_source:
+            from filanti.core.file_manager import get_file_manager
+            fm = get_file_manager()
+            if secure_delete:
+                fm.secure_delete(path)
+            else:
+                fm.delete(path)
 
         return DecryptResult(output_path=out_path, size=size)
 
@@ -986,6 +1000,8 @@ class Filanti:
         output: str | Path | None = None,
         password: str | bytes | None = None,
         recipient_id: str | None = None,
+        remove_source: bool = False,
+        secure_delete: bool = True,
     ) -> HybridDecryptResult:
         """Decrypt a hybrid encrypted file.
 
@@ -995,6 +1011,9 @@ class Filanti:
             output: Output path (default: removes .henc extension).
             password: Password if private key is encrypted.
             recipient_id: Optional recipient ID to select specific session key.
+            remove_source: If True, delete encrypted file after successful decryption.
+            secure_delete: If True and remove_source is True, securely overwrite
+                the encrypted file before deletion.
 
         Returns:
             HybridDecryptResult with output path and size.
@@ -1009,6 +1028,13 @@ class Filanti:
                 "my-key.pem",
                 password="my-password"
             )
+
+            # Decrypt and remove encrypted file
+            Filanti.hybrid_decrypt(
+                "secret.txt.henc",
+                "my-key.pem",
+                remove_source=True
+            )
         """
         path = Path(path)
         if output:
@@ -1022,6 +1048,15 @@ class Filanti:
             password = password.encode("utf-8")
 
         size = _hybrid_decrypt_file(path, out_path, private_key, password, recipient_id)
+
+        # Remove encrypted source file if requested
+        if remove_source:
+            from filanti.core.file_manager import get_file_manager
+            fm = get_file_manager()
+            if secure_delete:
+                fm.secure_delete(path)
+            else:
+                fm.delete(path)
 
         return HybridDecryptResult(output_path=out_path, size=size)
 

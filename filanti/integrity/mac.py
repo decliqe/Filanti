@@ -99,16 +99,69 @@ class IntegrityMetadata:
         """Serialize to JSON string."""
         return json.dumps(asdict(self), indent=indent, sort_keys=True)
 
+    def to_json_minimal(self) -> str:
+        """Serialize to minimal JSON (reduced information leakage)."""
+        # Only include essential fields: version, mac, algorithm
+        # Omit: filename, filesize, created_at
+        minimal = {
+            "v": "2",  # Minimal format version
+            "m": self.mac,
+            "a": self._short_algorithm(self.algorithm) if self.algorithm else None,
+        }
+        return json.dumps(minimal, separators=(",", ":"))
+
+    @staticmethod
+    def _short_algorithm(algorithm: str) -> str:
+        """Convert algorithm to short form."""
+        short_map = {
+            "hmac-sha256": "hs256",
+            "hmac-sha384": "hs384",
+            "hmac-sha512": "hs512",
+            "hmac-sha3-256": "hs3256",
+            "hmac-blake2b": "hb2b",
+        }
+        return short_map.get(algorithm, algorithm)
+
+    @staticmethod
+    def _expand_algorithm(short: str) -> str:
+        """Convert short algorithm to full form."""
+        expand_map = {
+            "hs256": "hmac-sha256",
+            "hs384": "hmac-sha384",
+            "hs512": "hmac-sha512",
+            "hs3256": "hmac-sha3-256",
+            "hb2b": "hmac-blake2b",
+        }
+        return expand_map.get(short, short)
+
     @classmethod
     def from_json(cls, json_str: str) -> "IntegrityMetadata":
-        """Deserialize from JSON string."""
+        """Deserialize from JSON string (supports v1 and v2/minimal formats)."""
         data = json.loads(json_str)
+
+        # Check for minimal v2 format
+        if "v" in data and data.get("v") == "2":
+            return cls(
+                version="2.0",
+                mac=data.get("m"),
+                algorithm=cls._expand_algorithm(data.get("a", "")),
+            )
+
+        # Standard v1 format
         return cls(**data)
 
-    def save(self, path: str | Path) -> None:
-        """Save metadata to file."""
+    def save(self, path: str | Path, minimal: bool = False) -> None:
+        """Save metadata to file.
+
+        Args:
+            path: Output path.
+            minimal: If True, use minimal format (reduced information leakage).
+        """
         path = Path(path)
-        path.write_text(self.to_json(), encoding="utf-8")
+        if minimal:
+            path.write_text(self.to_json_minimal(), encoding="utf-8")
+        else:
+            path.write_text(self.to_json(), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path) -> "IntegrityMetadata":
@@ -384,6 +437,7 @@ def create_integrity_file(
     key: bytes,
     algorithm: MACAlgorithm | str = DEFAULT_ALGORITHM,
     output_path: str | Path | None = None,
+    minimal: bool = False,
 ) -> Path:
     """Create detached integrity metadata file.
 
@@ -392,6 +446,8 @@ def create_integrity_file(
         key: Secret key for HMAC.
         algorithm: MAC algorithm to use.
         output_path: Optional output path (default: file_path + '.mac')
+        minimal: If True, use minimal format (reduced information leakage).
+            Only includes version, MAC, and algorithm (no filename, filesize, timestamp).
 
     Returns:
         Path to the created integrity file.
@@ -408,13 +464,13 @@ def create_integrity_file(
     metadata = IntegrityMetadata(
         mac=result.to_hex(),
         algorithm=result.algorithm,
-        filename=file_path.name,
-        filesize=file_path.stat().st_size,
-        created_at=result.created_at,
+        filename=file_path.name if not minimal else None,
+        filesize=file_path.stat().st_size if not minimal else None,
+        created_at=result.created_at if not minimal else None,
     )
 
     try:
-        metadata.save(output_path)
+        metadata.save(output_path, minimal=minimal)
         return output_path
     except Exception as e:
         raise FileOperationError(
