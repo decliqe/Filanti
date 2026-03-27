@@ -48,6 +48,30 @@ HEADER_VERSION = "1.1.0"
 # Chunk size for streaming encryption (64 KB)
 CHUNK_SIZE = 65536
 
+# Minimum password length for password-based encryption
+MIN_PASSWORD_LENGTH = 8
+
+
+def validate_password(password: str, allow_weak: bool = False) -> None:
+    """Validate password meets minimum security requirements.
+
+    Args:
+        password: Password to validate.
+        allow_weak: If True, skip validation (for testing/special cases).
+
+    Raises:
+        EncryptionError: If password is too weak.
+    """
+    if allow_weak:
+        return
+    if not password:
+        raise EncryptionError("Password cannot be empty")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise EncryptionError(
+            f"Password must be at least {MIN_PASSWORD_LENGTH} characters",
+            context={"length": len(password), "minimum": MIN_PASSWORD_LENGTH},
+        )
+
 
 @dataclass
 class EncryptedData:
@@ -103,20 +127,38 @@ class EncryptedData:
         offset = 0
 
         # Salt
+        if len(data) < offset + 4:
+            raise EncryptionError("Invalid encrypted data: truncated salt length")
         salt_len = int.from_bytes(data[offset:offset+4], "big")
         offset += 4
+        if salt_len > 1024:
+            raise EncryptionError("Invalid encrypted data: salt length too large")
+        if len(data) < offset + salt_len:
+            raise EncryptionError("Invalid encrypted data: truncated salt")
         salt = data[offset:offset+salt_len] if salt_len > 0 else None
         offset += salt_len
 
         # Nonce
+        if len(data) < offset + 4:
+            raise EncryptionError("Invalid encrypted data: truncated nonce length")
         nonce_len = int.from_bytes(data[offset:offset+4], "big")
         offset += 4
+        if nonce_len > 64:
+            raise EncryptionError("Invalid encrypted data: nonce length too large")
+        if len(data) < offset + nonce_len:
+            raise EncryptionError("Invalid encrypted data: truncated nonce")
         nonce = data[offset:offset+nonce_len]
         offset += nonce_len
 
         # Metadata
+        if len(data) < offset + 4:
+            raise EncryptionError("Invalid encrypted data: truncated metadata length")
         meta_len = int.from_bytes(data[offset:offset+4], "big")
         offset += 4
+        if meta_len > 1_048_576:
+            raise EncryptionError("Invalid encrypted data: metadata length too large")
+        if len(data) < offset + meta_len:
+            raise EncryptionError("Invalid encrypted data: truncated metadata")
         meta_bytes = data[offset:offset+meta_len]
         meta = json.loads(meta_bytes.decode("utf-8"))
         offset += meta_len
@@ -154,7 +196,12 @@ class EncryptionMetadata:
     def from_bytes(cls, data: bytes) -> "EncryptionMetadata":
         """Deserialize metadata from bytes."""
         parsed = json.loads(data.decode("utf-8"))
-        return cls(**parsed)
+        # Validate required fields
+        required = {"version", "algorithm", "nonce"}
+        missing = required - set(parsed.keys())
+        if missing:
+            raise EncryptionError(f"Invalid metadata: missing fields {missing}")
+        return cls(**{k: v for k, v in parsed.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
@@ -258,6 +305,7 @@ def encrypt_bytes_with_password(
     algorithm: EncryptionAlgorithm = DEFAULT_ALGORITHM,
     kdf_params: KDFParams | None = None,
     associated_data: bytes | None = None,
+    allow_weak_password: bool = False,
 ) -> EncryptedData:
     """Encrypt bytes using a password.
 
@@ -269,29 +317,37 @@ def encrypt_bytes_with_password(
         algorithm: Encryption algorithm to use.
         kdf_params: Optional KDF parameters.
         associated_data: Optional additional authenticated data.
+        allow_weak_password: If True, skip password strength validation.
 
     Returns:
         EncryptedData containing ciphertext and KDF parameters.
 
     Raises:
-        EncryptionError: If encryption fails.
+        EncryptionError: If encryption fails or password is too weak.
     """
+    validate_password(password, allow_weak=allow_weak_password)
     try:
         # Derive key from password
         derived = derive_key(password, params=kdf_params)
+        key_ba = bytearray(derived.key)
 
-        # Encrypt with derived key
-        result = encrypt_bytes(plaintext, derived.key, algorithm, associated_data)
+        try:
+            # Encrypt with derived key
+            result = encrypt_bytes(plaintext, bytes(key_ba), algorithm, associated_data)
 
-        # Add KDF info to result
-        return EncryptedData(
-            ciphertext=result.ciphertext,
-            nonce=result.nonce,
-            algorithm=result.algorithm,
-            salt=derived.salt,
-            kdf_algorithm=derived.algorithm,
-            kdf_params=derived.params,
-        )
+            # Add KDF info to result
+            return EncryptedData(
+                ciphertext=result.ciphertext,
+                nonce=result.nonce,
+                algorithm=result.algorithm,
+                salt=derived.salt,
+                kdf_algorithm=derived.algorithm,
+                kdf_params=derived.params,
+            )
+        finally:
+            # Securely zero the key material
+            for i in range(len(key_ba)):
+                key_ba[i] = 0
     except Exception as e:
         if isinstance(e, EncryptionError):
             raise
@@ -336,10 +392,13 @@ def encrypt_file(
         plaintext = fm.read_bytes(input_path)
         original_size = len(plaintext)
 
-        # Encrypt
-        result = encrypt_bytes(plaintext, key, algorithm)
+        # Build AAD from stable metadata fields (not nonce, since it changes per encryption)
+        metadata_aad = _build_file_aad(FORMAT_VERSION, algorithm.value, original_size)
 
-        # Create metadata
+        # Encrypt with AAD binding
+        result = encrypt_bytes(plaintext, key, algorithm, associated_data=metadata_aad)
+
+        # Create metadata with actual nonce
         metadata = EncryptionMetadata(
             version=FORMAT_VERSION,
             algorithm=result.algorithm,
@@ -348,7 +407,7 @@ def encrypt_file(
         )
 
         # Write encrypted file with header
-        output = _build_encrypted_file(result.ciphertext, metadata)
+        output = _build_encrypted_file(result.ciphertext, metadata, key)
         fm.write_bytes(output_path, output)
 
         # Remove source file if requested
@@ -379,6 +438,7 @@ def encrypt_file_with_password(
     file_manager: FileManager | None = None,
     remove_source: bool = False,
     secure_delete: bool = True,
+    allow_weak_password: bool = False,
 ) -> EncryptionMetadata:
     """Encrypt a file using a password.
 
@@ -400,6 +460,7 @@ def encrypt_file_with_password(
         EncryptionError: If encryption fails.
         FileOperationError: If file operations fail.
     """
+    validate_password(password, allow_weak=allow_weak_password)
     fm = file_manager or get_file_manager()
 
     try:
@@ -407,25 +468,32 @@ def encrypt_file_with_password(
         plaintext = fm.read_bytes(input_path)
         original_size = len(plaintext)
 
-        # Encrypt with password
-        result = encrypt_bytes_with_password(
-            plaintext, password, algorithm, kdf_params
-        )
+        # Derive key from password first to pass to metadata encryption
+        derived = derive_key(password, params=kdf_params)
+        key_ba = bytearray(derived.key)
 
-        # Create metadata
-        metadata = EncryptionMetadata(
-            version=FORMAT_VERSION,
-            algorithm=result.algorithm,
-            nonce=result.nonce.hex(),
-            salt=result.salt.hex() if result.salt else None,
-            kdf_algorithm=result.kdf_algorithm,
-            kdf_params=result.kdf_params,
-            original_size=original_size,
-        )
+        try:
+            # Encrypt with derived key
+            result = encrypt_bytes(plaintext, bytes(key_ba), algorithm)
 
-        # Write encrypted file with header
-        output = _build_encrypted_file(result.ciphertext, metadata)
-        fm.write_bytes(output_path, output)
+            # Create metadata
+            metadata = EncryptionMetadata(
+                version=FORMAT_VERSION,
+                algorithm=result.algorithm,
+                nonce=result.nonce.hex(),
+                salt=derived.salt.hex(),
+                kdf_algorithm=derived.algorithm,
+                kdf_params=derived.params,
+                original_size=original_size,
+            )
+
+            # Write encrypted file with v1 format (password files need plaintext KDF params)
+            output = _build_encrypted_file_v1(result.ciphertext, metadata)
+            fm.write_bytes(output_path, output)
+        finally:
+            # Securely zero the key material
+            for i in range(len(key_ba)):
+                key_ba[i] = 0
 
         # Remove source file if requested
         if remove_source:
@@ -446,21 +514,36 @@ def encrypt_file_with_password(
         ) from e
 
 
-def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata) -> bytes:
+def _build_file_aad(version: int, algorithm: str, original_size: int) -> bytes:
+    """Build deterministic AAD from stable metadata fields (excludes nonce).
+
+    This is used by both encrypt_file and decrypt_file to produce
+    matching AAD for the AEAD binding.
+    """
+    import json
+    return json.dumps(
+        {"version": version, "algorithm": algorithm, "original_size": original_size},
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encryption_key: bytes | None = None) -> bytes:
     """Build encrypted file with v2 format (encrypted metadata).
 
     File format v2:
     - N bytes: Base64 header ({"p":"FLNT","v":"1.1.0"})
     - 2 bytes: Header length (big-endian uint16)
-    - 12 bytes: Metadata nonce (for deriving metadata key and encryption)
+    - 12 bytes: Metadata nonce (for metadata encryption)
     - 4 bytes: Encrypted metadata length (big-endian uint32)
     - M bytes: Encrypted metadata ciphertext
     - K bytes: File ciphertext
 
-    The metadata is encrypted using AES-GCM with a key derived from:
-    SHA-256(metadata_nonce || "filanti-meta-v2")
+    The metadata is encrypted using AES-GCM with a key derived via HKDF
+    from the user's encryption key, ensuring only key holders can read metadata.
     """
-    from hashlib import sha256
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
 
     # Create minimal public header
     header = FileHeader()
@@ -469,8 +552,20 @@ def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata) -> by
     # Generate a random nonce for metadata encryption
     meta_nonce = generate_nonce(NONCE_SIZE_GCM)
 
-    # Derive metadata encryption key from the nonce
-    meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
+    # Derive metadata encryption key from the user's encryption key via HKDF
+    if encryption_key is not None:
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=meta_nonce,
+            info=b"filanti-meta-v2",
+            backend=default_backend(),
+        )
+        meta_key = hkdf.derive(encryption_key)
+    else:
+        # Fallback: derive from nonce only (legacy compat, NOT recommended)
+        from hashlib import sha256
+        meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
 
     # Encrypt metadata using AES-GCM
     meta_plaintext = metadata.to_bytes()
@@ -505,13 +600,14 @@ def _build_encrypted_file_v1(ciphertext: bytes, metadata: EncryptionMetadata) ->
     return FILANTI_MAGIC + meta_length + meta_bytes + ciphertext
 
 
-def parse_encrypted_file(data: bytes) -> tuple[EncryptionMetadata, bytes]:
+def parse_encrypted_file(data: bytes, encryption_key: bytes | None = None) -> tuple[EncryptionMetadata, bytes]:
     """Parse encrypted file header and extract ciphertext.
 
     Supports both v1 (legacy) and v2 formats.
 
     Args:
         data: Encrypted file bytes.
+        encryption_key: Optional encryption key for v2 metadata decryption.
 
     Returns:
         Tuple of (metadata, ciphertext).
@@ -527,7 +623,7 @@ def parse_encrypted_file(data: bytes) -> tuple[EncryptionMetadata, bytes]:
         return _parse_encrypted_file_v1(data)
 
     # Try v2 format (starts with base64-encoded header)
-    return _parse_encrypted_file_v2(data)
+    return _parse_encrypted_file_v2(data, encryption_key)
 
 
 def _parse_encrypted_file_v1(data: bytes) -> tuple[EncryptionMetadata, bytes]:
@@ -551,7 +647,7 @@ def _parse_encrypted_file_v1(data: bytes) -> tuple[EncryptionMetadata, bytes]:
     return metadata, ciphertext
 
 
-def _parse_encrypted_file_v2(data: bytes) -> tuple[EncryptionMetadata, bytes]:
+def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -> tuple[EncryptionMetadata, bytes]:
     """Parse v2 format encrypted file with encrypted metadata.
 
     File format v2:
@@ -562,7 +658,9 @@ def _parse_encrypted_file_v2(data: bytes) -> tuple[EncryptionMetadata, bytes]:
     - M bytes: Encrypted metadata
     - K bytes: File ciphertext
     """
-    from hashlib import sha256
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
 
     try:
         # Find header boundary by scanning for valid base64 header
@@ -581,7 +679,7 @@ def _parse_encrypted_file_v2(data: bytes) -> tuple[EncryptionMetadata, bytes]:
                     header_b64 = potential_header
                     header_len_pos = try_len
                     break
-                except Exception:
+                except (Exception, ValueError):
                     continue
 
         if header_b64 is None:
@@ -618,8 +716,20 @@ def _parse_encrypted_file_v2(data: bytes) -> tuple[EncryptionMetadata, bytes]:
         # Extract file ciphertext
         ciphertext = data[offset:]
 
-        # Derive metadata decryption key
-        meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
+        # Derive metadata decryption key from encryption key via HKDF
+        if encryption_key is not None:
+            hkdf = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=meta_nonce,
+                info=b"filanti-meta-v2",
+                backend=default_backend(),
+            )
+            meta_key = hkdf.derive(encryption_key)
+        else:
+            # Fallback: derive from nonce only (legacy compat)
+            from hashlib import sha256
+            meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
 
         # Decrypt metadata
         meta_cipher = AESGCM(meta_key)

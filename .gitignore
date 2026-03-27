@@ -12,3 +12,5 @@ filanti.egg-info/
 .idea/
 .git.backup/
 .vscode/
+*agents
+.scratchpad/

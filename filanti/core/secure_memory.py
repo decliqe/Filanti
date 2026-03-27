@@ -141,15 +141,15 @@ class SecureBytes:
         self._cleared = False
 
     @property
-    def data(self) -> bytes:
-        """Get the data as immutable bytes.
+    def data(self) -> memoryview:
+        """Get the data as a memoryview (avoids creating immutable copy).
 
         Returns:
-            Copy of the data as bytes.
+            Memoryview of the internal bytearray.
         """
         if self._cleared:
             raise ValueError("SecureBytes has been cleared")
-        return bytes(self._data)
+        return memoryview(self._data)
 
     def __enter__(self) -> "SecureBytes":
         return self

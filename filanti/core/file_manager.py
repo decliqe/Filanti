@@ -24,20 +24,24 @@ class FileManager:
 
     Provides safe file operations with:
     - Path validation and normalization
+    - Optional base directory confinement (path traversal prevention)
     - Streaming for large files
     - Consistent error handling
     - Context manager support
     """
 
-    def __init__(self, buffer_size: int = DEFAULT_BUFFER_SIZE) -> None:
+    def __init__(self, buffer_size: int = DEFAULT_BUFFER_SIZE, base_directory: str | Path | None = None) -> None:
         """Initialize FileManager.
 
         Args:
             buffer_size: Size of buffer for streaming operations in bytes.
+            base_directory: If set, all file operations are confined to this
+                directory. Paths that resolve outside it are rejected.
         """
         if buffer_size <= 0:
             raise ValueError("Buffer size must be positive")
         self._buffer_size = buffer_size
+        self._base_directory: Path | None = Path(base_directory).resolve() if base_directory else None
 
     @property
     def buffer_size(self) -> int:
@@ -70,6 +74,25 @@ class FileManager:
                 operation="validate",
             ) from e
 
+    def _check_confined(self, resolved_path: Path) -> None:
+        """Ensure resolved path is within the base directory, if set.
+
+        Args:
+            resolved_path: Already-resolved (absolute) path to check.
+
+        Raises:
+            FileOperationError: If path escapes the base directory.
+        """
+        if self._base_directory is not None:
+            try:
+                resolved_path.relative_to(self._base_directory)
+            except ValueError:
+                raise FileOperationError(
+                    "Path traversal denied: path is outside the allowed base directory",
+                    path=str(resolved_path),
+                    operation="validate",
+                )
+
     def exists(self, path: str | Path) -> bool:
         """Check if a file exists.
 
@@ -81,6 +104,7 @@ class FileManager:
         """
         try:
             validated = self.validate_path(path)
+            self._check_confined(validated)
             return validated.exists() and validated.is_file()
         except FileOperationError:
             return False
@@ -98,6 +122,7 @@ class FileManager:
             FileOperationError: If file cannot be read.
         """
         validated = self.validate_path(path)
+        self._check_confined(validated)
 
         if not validated.exists():
             raise FileOperationError(
@@ -142,6 +167,7 @@ class FileManager:
             FileOperationError: If file cannot be written.
         """
         validated = self.validate_path(path)
+        self._check_confined(validated)
 
         try:
             # Create parent directories if needed
@@ -176,6 +202,7 @@ class FileManager:
             FileOperationError: If file cannot be read.
         """
         validated = self.validate_path(path)
+        self._check_confined(validated)
 
         if not validated.exists():
             raise FileOperationError(
@@ -226,6 +253,7 @@ class FileManager:
             FileOperationError: If file size cannot be determined.
         """
         validated = self.validate_path(path)
+        self._check_confined(validated)
 
         if not validated.exists():
             raise FileOperationError(
@@ -253,6 +281,7 @@ class FileManager:
             FileOperationError: If file cannot be deleted.
         """
         validated = self.validate_path(path)
+        self._check_confined(validated)
 
         if not validated.exists():
             raise FileOperationError(
@@ -300,6 +329,7 @@ class FileManager:
             raise ValueError("passes must be at least 1")
 
         validated = self.validate_path(path)
+        self._check_confined(validated)
 
         if not validated.exists():
             raise FileOperationError(

@@ -14,6 +14,7 @@ Supported algorithms:
 """
 
 import json
+import hmac
 import zlib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -92,7 +93,8 @@ class ChecksumMetadata:
     def from_json(cls, json_str: str) -> "ChecksumMetadata":
         """Deserialize from JSON string."""
         data = json.loads(json_str)
-        return cls(**data)
+        valid_fields = {f.name for f in __import__('dataclasses').fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in valid_fields})
 
     def save(self, path: str | Path) -> None:
         """Save metadata to file."""
@@ -199,7 +201,12 @@ def verify_checksum(
     """
     result = compute_checksum(data, algorithm)
 
-    if result.checksum != expected:
+    # Use constant-time comparison to avoid timing side channels.
+    # While checksums are non-cryptographic, consistent practices reduce risk.
+    if not hmac.compare_digest(
+        result.to_hex().encode("ascii"),
+        f"{expected:08x}".encode("ascii") if algorithm != ChecksumAlgorithm.XXHASH64 else f"{expected:016x}".encode("ascii"),
+    ):
         raise IntegrityError(
             "Checksum verification failed: data may be corrupted",
             algorithm=result.algorithm,
@@ -341,7 +348,8 @@ def verify_file_checksum(
     """
     result = compute_file_checksum(file_path, algorithm)
 
-    if result.checksum != expected:
+    expected_hex = f"{expected:08x}" if algorithm != ChecksumAlgorithm.XXHASH64 else f"{expected:016x}"
+    if not hmac.compare_digest(result.to_hex().encode("ascii"), expected_hex.encode("ascii")):
         raise IntegrityError(
             "File checksum verification failed: file may be corrupted",
             algorithm=result.algorithm,

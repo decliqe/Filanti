@@ -161,7 +161,7 @@ class DecryptionError(FilantiError):
         self.algorithm = algorithm
 
 
-class KeyError(FilantiError):
+class CryptoKeyError(FilantiError):
     """Error related to cryptographic key operations."""
 
     def __init__(
@@ -170,7 +170,7 @@ class KeyError(FilantiError):
         key_type: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize KeyError.
+        """Initialize CryptoKeyError.
 
         Args:
             message: Human-readable error message.

@@ -11,6 +11,7 @@ Supports ENV-based secret resolution:
 import json
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -132,6 +133,14 @@ def resolve_password_from_options(
 
     # Priority 1: --password (literal or ENV reference)
     if password is not None:
+        # Warn if literal password used (not an ENV reference)
+        if not is_env_reference(password):
+            typer.echo(
+                "[WARNING] Passing literal passwords via --password is insecure — "
+                "visible in process list and shell history. "
+                "Use ENV references instead: --password ENV:MY_VAR",
+                err=True,
+            )
         resolved_password = resolve_secret(password)
 
     # Priority 2: --env VAR_NAME (PowerShell-friendly)
@@ -150,14 +159,23 @@ def resolve_password_from_options(
                 env_var=env_key,
             )
 
-    # Priority 4: Interactive prompt
+    # Priority 4: Interactive prompt (with retry limit)
     if resolved_password is None and prompt:
-        resolved_password = typer.prompt(prompt_text, hide_input=True)
-        if confirm:
-            confirm_password = typer.prompt(f"Confirm {prompt_text.lower()}", hide_input=True)
-            if resolved_password != confirm_password:
-                output_error(f"{prompt_text}s do not match")
-                return None  # Will never reach here due to exit
+        max_retries = 3
+        for attempt in range(max_retries):
+            resolved_password = typer.prompt(prompt_text, hide_input=True)
+            if confirm:
+                confirm_password = typer.prompt(f"Confirm {prompt_text.lower()}", hide_input=True)
+                if resolved_password != confirm_password:
+                    remaining = max_retries - attempt - 1
+                    if remaining > 0:
+                        typer.echo(f"{prompt_text}s do not match. {remaining} attempt(s) remaining.", err=True)
+                        resolved_password = None
+                        continue
+                    else:
+                        output_error(f"{prompt_text}s do not match. Maximum retries exceeded.")
+                        return None
+            break
 
     return resolved_password
 
@@ -422,6 +440,13 @@ def encrypt(
         if remove_source:
             result["source_removed"] = True
             result["secure_delete"] = secure_delete
+            if secure_delete:
+                typer.echo(
+                    "[NOTE] Secure deletion is best-effort. SSDs with wear-leveling, "
+                    "journaling filesystems, and backup systems may retain copies. "
+                    "For maximum security, use full-disk encryption.",
+                    err=True,
+                )
 
         output_json(result)
 

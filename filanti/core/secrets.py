@@ -32,6 +32,8 @@ Usage:
 
 import os
 import re
+import stat
+import warnings
 from pathlib import Path
 from typing import Pattern
 
@@ -121,6 +123,21 @@ def load_dotenv(
 
     if not env_path.exists():
         return loaded
+
+    # Check file permissions on Unix (HIGH-02 fix)
+    if hasattr(os, 'stat'):
+        try:
+            file_stat = env_path.stat()
+            mode = file_stat.st_mode
+            if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
+                warnings.warn(
+                    f"Insecure .env file permissions on '{env_path}': mode {oct(mode & 0o777)}. "
+                    f"Secrets may be readable by other users. "
+                    f"Fix with: chmod 600 {env_path}",
+                    stacklevel=2,
+                )
+        except OSError:
+            pass
 
     try:
         content = env_path.read_text(encoding=encoding)

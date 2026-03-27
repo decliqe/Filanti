@@ -114,7 +114,7 @@ def generate_nonce(size: int = NONCE_SIZE_GCM) -> bytes:
     return secure_random_bytes(size)
 
 
-def split_key(master_key: bytes, num_keys: int = 2) -> list[bytes]:
+def split_key(master_key: bytes, num_keys: int = 2, salt: bytes | None = None, info: bytes = b"filanti-key-split") -> list[bytes]:
     """Split a master key into derived subkeys.
 
     Uses HKDF to derive multiple independent keys from a master key.
@@ -123,6 +123,8 @@ def split_key(master_key: bytes, num_keys: int = 2) -> list[bytes]:
     Args:
         master_key: Master key to split.
         num_keys: Number of subkeys to derive.
+        salt: Optional salt bytes for HKDF. If None, generates random salt.
+        info: Context info for HKDF (allows context separation).
 
     Returns:
         List of derived key bytes.
@@ -137,11 +139,14 @@ def split_key(master_key: bytes, num_keys: int = 2) -> list[bytes]:
     key_size = len(master_key)
     total_size = key_size * num_keys
 
+    if salt is None:
+        salt = secure_random_bytes(32)
+
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=total_size,
-        salt=None,  # Optional: could add salt parameter
-        info=b"filanti-key-split",
+        salt=salt,
+        info=info,
         backend=default_backend(),
     )
 
@@ -157,7 +162,7 @@ def split_key(master_key: bytes, num_keys: int = 2) -> list[bytes]:
     return keys
 
 
-def derive_subkey(master_key: bytes, context: bytes, length: int = DEFAULT_KEY_SIZE) -> bytes:
+def derive_subkey(master_key: bytes, context: bytes, length: int = DEFAULT_KEY_SIZE, salt: bytes | None = None) -> bytes:
     """Derive a subkey from a master key with context.
 
     Uses HKDF-Expand for deterministic subkey derivation.
@@ -167,6 +172,7 @@ def derive_subkey(master_key: bytes, context: bytes, length: int = DEFAULT_KEY_S
         master_key: Master key bytes.
         context: Context/info bytes (e.g., b"encryption" or b"mac").
         length: Desired subkey length.
+        salt: Optional salt for HKDF. If None, uses random salt.
 
     Returns:
         Derived subkey bytes.
@@ -175,10 +181,13 @@ def derive_subkey(master_key: bytes, context: bytes, length: int = DEFAULT_KEY_S
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.backends import default_backend
 
+    if salt is None:
+        salt = secure_random_bytes(32)
+
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=length,
-        salt=None,
+        salt=salt,
         info=context,
         backend=default_backend(),
     )

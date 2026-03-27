@@ -149,8 +149,8 @@ def decrypt_file(
         # Read encrypted file
         encrypted_data = fm.read_bytes(input_path)
 
-        # Parse header
-        metadata, ciphertext = parse_encrypted_file(encrypted_data)
+        # Parse header (pass key for v2 metadata decryption)
+        metadata, ciphertext = parse_encrypted_file(encrypted_data, encryption_key=key)
 
         # Create EncryptedData from parsed file
         encrypted = EncryptedData(
@@ -159,8 +159,14 @@ def decrypt_file(
             algorithm=metadata.algorithm,
         )
 
-        # Decrypt
-        plaintext = decrypt_bytes(encrypted, key)
+        # Reconstruct AAD from stable metadata fields (MED-05 binding)
+        from filanti.crypto.encryption import _build_file_aad
+        metadata_aad = _build_file_aad(
+            metadata.version, metadata.algorithm, metadata.original_size,
+        )
+
+        # Decrypt with AAD
+        plaintext = decrypt_bytes(encrypted, key, associated_data=metadata_aad)
 
         # Write output
         fm.write_bytes(output_path, plaintext)
@@ -203,7 +209,7 @@ def decrypt_file_with_password(
         # Read encrypted file
         encrypted_data = fm.read_bytes(input_path)
 
-        # Parse header
+        # First pass: parse without key to get KDF params (fallback for metadata)
         metadata, ciphertext = parse_encrypted_file(encrypted_data)
 
         # Validate password-based encryption metadata

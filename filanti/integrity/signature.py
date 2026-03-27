@@ -10,6 +10,7 @@ Supported algorithms:
 """
 
 import json
+import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from enum import Enum
@@ -45,6 +46,13 @@ _ECDSA_CURVES = {
     SignatureAlgorithm.ECDSA_P256: ec.SECP256R1,
     SignatureAlgorithm.ECDSA_P384: ec.SECP384R1,
     SignatureAlgorithm.ECDSA_P521: ec.SECP521R1,
+}
+
+# Map ECDSA algorithm to matching hash (must match curve security level)
+_ECDSA_HASHES = {
+    SignatureAlgorithm.ECDSA_P256: hashes.SHA256,
+    SignatureAlgorithm.ECDSA_P384: hashes.SHA384,
+    SignatureAlgorithm.ECDSA_P521: hashes.SHA512,
 }
 
 
@@ -109,7 +117,8 @@ class SignatureMetadata:
     def from_json(cls, json_str: str) -> "SignatureMetadata":
         """Deserialize from JSON string."""
         data = json.loads(json_str)
-        return cls(**data)
+        valid_fields = {f.name for f in __import__('dataclasses').fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in valid_fields})
 
     def save(self, path: str | Path) -> None:
         """Save metadata to file."""
@@ -224,6 +233,7 @@ def save_keypair(
 
     try:
         private_key_path.write_bytes(keypair.private_key)
+        os.chmod(private_key_path, 0o600)
         public_key_path.write_bytes(keypair.public_key)
         return (private_key_path, public_key_path)
     except Exception as e:
@@ -383,7 +393,8 @@ def sign_bytes(
         if algorithm == SignatureAlgorithm.ED25519:
             signature = key.sign(data)
         elif algorithm in _ECDSA_CURVES:
-            signature = key.sign(data, ec.ECDSA(hashes.SHA256()))
+            hash_cls = _ECDSA_HASHES[algorithm]
+            signature = key.sign(data, ec.ECDSA(hash_cls()))
         else:
             raise SignatureError(
                 f"Unsupported signing algorithm: {algorithm}",
@@ -441,7 +452,8 @@ def verify_signature(
         if algorithm == SignatureAlgorithm.ED25519:
             key.verify(signature, data)
         elif algorithm in _ECDSA_CURVES:
-            key.verify(signature, data, ec.ECDSA(hashes.SHA256()))
+            hash_cls = _ECDSA_HASHES[algorithm]
+            key.verify(signature, data, ec.ECDSA(hash_cls()))
         else:
             raise SignatureError(
                 f"Unsupported verification algorithm: {algorithm}",
@@ -504,8 +516,9 @@ def sign_stream(
             # Use prehashed signature for ECDSA
             from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
+            hash_cls = _ECDSA_HASHES[algorithm]
             # Hash the stream
-            hasher = hashes.Hash(hashes.SHA256(), backend=default_backend())
+            hasher = hashes.Hash(hash_cls(), backend=default_backend())
             while True:
                 chunk = stream.read(chunk_size)
                 if not chunk:
@@ -513,7 +526,7 @@ def sign_stream(
                 hasher.update(chunk)
 
             digest = hasher.finalize()
-            signature = key.sign(digest, ec.ECDSA(Prehashed(hashes.SHA256())))
+            signature = key.sign(digest, ec.ECDSA(Prehashed(hash_cls())))
         else:
             raise SignatureError(
                 f"Unsupported streaming sign algorithm: {algorithm}",
@@ -575,7 +588,8 @@ def verify_stream_signature(
         elif algorithm in _ECDSA_CURVES:
             from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
-            hasher = hashes.Hash(hashes.SHA256(), backend=default_backend())
+            hash_cls = _ECDSA_HASHES[algorithm]
+            hasher = hashes.Hash(hash_cls(), backend=default_backend())
             while True:
                 chunk = stream.read(chunk_size)
                 if not chunk:
@@ -583,7 +597,7 @@ def verify_stream_signature(
                 hasher.update(chunk)
 
             digest = hasher.finalize()
-            key.verify(signature, digest, ec.ECDSA(Prehashed(hashes.SHA256())))
+            key.verify(signature, digest, ec.ECDSA(Prehashed(hash_cls())))
         else:
             raise SignatureError(
                 f"Unsupported streaming verify algorithm: {algorithm}",

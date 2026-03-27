@@ -17,6 +17,7 @@ Security model:
 
 import base64
 import json
+import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from enum import Enum
@@ -156,45 +157,59 @@ class HybridEncryptedData:
         - Header length (2 bytes)
         - Session keys blob length (4 bytes)
         - Session keys blob (contains encrypted session keys - needed before decryption)
-        - Metadata nonce (12 bytes) - for encrypting internal metadata
-        - Encrypted metadata length (4 bytes)
-        - Encrypted metadata (algorithm, created_at, data nonce - encrypted with session key)
+        - Data nonce (12 bytes) - stored in plaintext (needed for data decryption)
+        - Meta nonce (12 bytes) - for encrypting internal metadata
+        - Encrypted internal metadata length (4 bytes)
+        - Encrypted internal metadata (algorithm, created_at - encrypted with derived key)
         - Ciphertext
 
-        Note: Session keys must remain unencrypted as they're needed to derive the
-        session key for decryption. The sensitive metadata (algorithm, timestamps)
-        is encrypted with the session key.
+        Note: Session keys remain unencrypted (they're the encrypted session key).
+        Data nonce is stored in plaintext (required for ciphertext decryption).
+        Only algorithm/timestamp metadata is encrypted.
         """
         # Create minimal public header
         header = AsymmetricFileHeader()
         header_b64 = header.to_base64()
 
-        # Session keys must be accessible before decryption (they ARE the encrypted session key)
+        # Session keys must be accessible before decryption
         session_keys_data = {
             "version": ASYMMETRIC_FORMAT_VERSION_V2,
             "session_keys": [sk.to_dict() for sk in self.session_keys],
         }
         session_keys_bytes = json.dumps(session_keys_data, separators=(",", ":")).encode("utf-8")
 
-        # Internal metadata (to be encrypted with session key)
-        # This is encrypted inline with the ciphertext using the same key
+        # Internal metadata to encrypt (algorithm details, timestamp)
         internal_meta = {
             "symmetric_algorithm": self.symmetric_algorithm,
             "created_at": self.created_at,
-            "nonce": self.nonce.hex(),
         }
         internal_meta_bytes = json.dumps(internal_meta, separators=(",", ":")).encode("utf-8")
 
-        # Prepend internal metadata to ciphertext (will be decrypted together)
-        # Format: meta_len (4 bytes) + meta + original ciphertext
-        combined_plaintext_prefix = len(internal_meta_bytes).to_bytes(4, "big") + internal_meta_bytes
+        # Derive metadata encryption key from data nonce + ciphertext prefix
+        # Both are available at parse time, so decryption is possible
+        meta_nonce = secure_random_bytes(NONCE_SIZE)
+        meta_key_material = self.nonce + self.ciphertext[:min(32, len(self.ciphertext))]
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=SESSION_KEY_SIZE,
+            salt=meta_nonce,
+            info=b"filanti-asym-meta-v2",
+            backend=default_backend(),
+        )
+        meta_key = hkdf.derive(meta_key_material)
+
+        meta_cipher = AESGCM(meta_key)
+        encrypted_meta = meta_cipher.encrypt(meta_nonce, internal_meta_bytes, None)
 
         parts = [
             header_b64,                                  # Base64 public header
             len(header_b64).to_bytes(2, "big"),          # Header length
             len(session_keys_bytes).to_bytes(4, "big"),  # Session keys length
             session_keys_bytes,                          # Session keys (needed for decryption)
-            combined_plaintext_prefix,                   # Metadata length + metadata (plaintext, but minimal)
+            self.nonce,                                  # Data nonce (12 bytes, plaintext)
+            meta_nonce,                                  # Metadata nonce (12 bytes)
+            len(encrypted_meta).to_bytes(4, "big"),      # Encrypted metadata length
+            encrypted_meta,                              # Encrypted internal metadata
             self.ciphertext,                             # Data ciphertext
         ]
         return b"".join(parts)
@@ -290,7 +305,7 @@ class HybridEncryptedData:
                             header_found = True
                             offset = header_len + 2
                             break
-                except:
+                except (ValueError, KeyError, json.JSONDecodeError):
                     continue
 
             if not header_found:
@@ -310,24 +325,64 @@ class HybridEncryptedData:
 
             session_keys = [EncryptedSessionKey.from_dict(sk) for sk in session_keys_data["session_keys"]]
 
-            # Read internal metadata
-            internal_meta_len = int.from_bytes(data[offset:offset+4], "big")
+            # Read data nonce (12 bytes, plaintext)
+            if len(data) < offset + NONCE_SIZE:
+                raise DecryptionError("Invalid v2 format: truncated data nonce")
+            data_nonce = data[offset:offset + NONCE_SIZE]
+            offset += NONCE_SIZE
+
+            # Read metadata nonce (12 bytes)
+            if len(data) < offset + NONCE_SIZE:
+                raise DecryptionError("Invalid v2 format: truncated metadata nonce")
+            meta_nonce = data[offset:offset + NONCE_SIZE]
+            offset += NONCE_SIZE
+
+            # Read encrypted metadata length
+            if len(data) < offset + 4:
+                raise DecryptionError("Invalid v2 format: truncated metadata length")
+            encrypted_meta_len = int.from_bytes(data[offset:offset+4], "big")
             offset += 4
 
-            internal_meta_bytes = data[offset:offset+internal_meta_len]
-            offset += internal_meta_len
+            if encrypted_meta_len > 1_048_576:  # 1 MB max
+                raise DecryptionError("Invalid v2 format: metadata length too large")
 
-            try:
-                internal_meta = json.loads(internal_meta_bytes.decode("utf-8"))
-            except Exception as e:
-                raise DecryptionError(f"Invalid internal metadata: {e}") from e
+            # Read encrypted metadata
+            if len(data) < offset + encrypted_meta_len:
+                raise DecryptionError("Invalid v2 format: truncated metadata")
+            encrypted_meta = data[offset:offset + encrypted_meta_len]
+            offset += encrypted_meta_len
 
             # Remaining is ciphertext
             ciphertext = data[offset:]
 
+            # Derive meta-key to decrypt internal metadata
+            # Uses data_nonce + ciphertext[:32] as HKDF IKM (same as to_bytes)
+            meta_key_material = data_nonce + ciphertext[:min(32, len(ciphertext))]
+            hkdf = HKDF(
+                algorithm=hashes.SHA256(),
+                length=SESSION_KEY_SIZE,
+                salt=meta_nonce,
+                info=b"filanti-asym-meta-v2",
+                backend=default_backend(),
+            )
+            meta_key = hkdf.derive(meta_key_material)
+
+            try:
+                meta_cipher = AESGCM(meta_key)
+                internal_meta_bytes = meta_cipher.decrypt(meta_nonce, encrypted_meta, None)
+                internal_meta = json.loads(internal_meta_bytes.decode("utf-8"))
+            except InvalidTag:
+                # Try legacy unencrypted format (plaintext JSON metadata)
+                try:
+                    internal_meta = json.loads(encrypted_meta.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    raise DecryptionError(f"Failed to decrypt internal metadata: {e}") from e
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise DecryptionError(f"Invalid internal metadata: {e}") from e
+
             return cls(
                 ciphertext=ciphertext,
-                nonce=bytes.fromhex(internal_meta["nonce"]),
+                nonce=data_nonce,
                 session_keys=session_keys,
                 symmetric_algorithm=internal_meta["symmetric_algorithm"],
                 created_at=internal_meta["created_at"],
@@ -483,6 +538,7 @@ def save_asymmetric_keypair(
 
     try:
         private_path.write_bytes(keypair.private_key)
+        os.chmod(private_path, 0o600)
         public_path.write_bytes(keypair.public_key)
         return (private_path, public_path)
     except Exception as e:
