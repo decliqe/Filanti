@@ -1,11 +1,10 @@
 """
-Filanti - A modular, security-focused file framework.
+Filanti — Secure Cryptographic Execution Platform.
 
-Provides secure-by-default primitives for file encryption, hashing,
-and integrity verification.
+v2: Orchestrator-driven, policy-enforced, streaming-first.
 """
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 __author__ = "Decliqe"
 
 from filanti.core.errors import (
@@ -19,10 +18,17 @@ from filanti.core.errors import (
     SignatureError,
     SecretError,
 )
+from filanti.core.context import ExecutionContext, Operation
+from filanti.core.orchestrator import Orchestrator, ExecutionResult
 
 __all__ = [
     "__version__",
-    # Base errors
+    # v2 core
+    "Orchestrator",
+    "ExecutionContext",
+    "ExecutionResult",
+    "Operation",
+    # Errors
     "FilantiError",
     "FileOperationError",
     "HashingError",

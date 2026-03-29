@@ -14,3 +14,5 @@ filanti.egg-info/
 .vscode/
 *agents
 .scratchpad/
+.venv/
+.pytest_cache/

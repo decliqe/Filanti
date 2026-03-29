@@ -682,7 +682,7 @@ def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -
                 except (Exception, ValueError):
                     continue
 
-        if header_b64 is None:
+        if header_b64 is None or header_len_pos is None:
             raise EncryptionError("Invalid encrypted file: cannot parse v2 header")
 
         # Parse and validate header

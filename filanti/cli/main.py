@@ -203,7 +203,24 @@ def resolve_key_from_options(
 # Create main CLI app
 app = typer.Typer(
     name="filanti",
-    help="A modular, security-focused file framework.",
+    help=(
+        "Filanti — A secure cryptographic file protection platform.\n\n"
+        "Encrypt, decrypt, hash, sign, and verify files from the command line\n"
+        "using modern authenticated encryption (AES-256-GCM, ChaCha20-Poly1305),\n"
+        "memory-hard key derivation (Argon2id), and digital signatures (Ed25519, ECDSA).\n\n"
+        "Quick start:\n\n"
+        "  Encrypt a file:   filanti encrypt secret.txt\n"
+        "  Decrypt a file:   filanti decrypt secret.txt.enc\n"
+        "  Hash a file:      filanti hash document.pdf\n"
+        "  Sign a file:      filanti sign report.pdf --key-file my_key\n"
+        "  List algorithms:  filanti list-algorithms\n\n"
+        "Passwords can be supplied via environment variables for security:\n\n"
+        "  filanti encrypt data.txt --password ENV:MY_SECRET\n"
+        "  filanti encrypt data.txt --env MY_SECRET\n"
+        "  filanti encrypt data.txt --dotenv .env --env-key SECRET_KEY\n\n"
+        "Use 'filanti COMMAND --help' for detailed usage of each command.\n"
+        "Launch interactive mode: python -m filanti"
+    ),
     add_completion=False,
     no_args_is_help=True,
 )
@@ -222,7 +239,11 @@ def output_error(message: str, code: int = 1) -> None:
 
 @app.command()
 def version() -> None:
-    """Show version information."""
+    """Display the installed Filanti version and build info.
+
+    Example:
+        filanti version
+    """
     output_json({
         "name": "filanti",
         "version": __version__,
@@ -249,9 +270,17 @@ def hash(
         )
     ] = "sha256",
 ) -> None:
-    """Compute cryptographic hash of a file.
+    """Compute a cryptographic hash digest of a file.
 
-    Supported algorithms: sha256, sha384, sha512, sha3-256, sha3-384, sha3-512, blake2b
+    Produces a hex-encoded digest using the chosen algorithm. Use this to
+    generate a fingerprint you can later verify with 'filanti verify'.
+
+    Algorithms: sha256 (default), sha384, sha512, sha3-256, sha3-384, sha3-512, blake2b
+
+    Examples:
+        filanti hash document.pdf
+        filanti hash backup.tar.gz --algorithm sha512
+        filanti hash firmware.bin -a blake2b
     """
     try:
         digest = crypto_hash.hash_file(str(file), algorithm)
@@ -289,9 +318,14 @@ def verify(
         )
     ] = "sha256",
 ) -> None:
-    """Verify file matches expected hash.
+    """Verify that a file matches an expected hash digest.
 
-    Uses constant-time comparison to prevent timing attacks.
+    Compares the file's computed hash against the expected value using
+    constant-time comparison (timing-attack safe). Exits with code 1 on mismatch.
+
+    Examples:
+        filanti verify document.pdf abc123...def
+        filanti verify firmware.bin deadbeef... --algorithm sha512
     """
     try:
         is_valid = crypto_hash.verify_file_hash(str(file), expected, algorithm)
@@ -316,7 +350,11 @@ def verify(
 
 @app.command()
 def algorithms() -> None:
-    """List supported hash algorithms."""
+    """List supported hash algorithms with the current default.
+
+    Example:
+        filanti algorithms
+    """
     output_json({
         "success": True,
         "algorithms": crypto_hash.get_supported_algorithms(),
@@ -591,7 +629,13 @@ def info(
         )
     ],
 ) -> None:
-    """Show metadata from an encrypted file."""
+    """Inspect metadata from an encrypted file (algorithm, KDF, size) without decrypting.
+
+    Useful for checking how a file was encrypted before attempting decryption.
+
+    Example:
+        filanti info secret.txt.enc
+    """
     try:
         metadata = get_file_metadata(file)
 
@@ -1055,7 +1099,13 @@ def verify_sig(
 ) -> None:
     """Verify a file's digital signature.
 
-    Uses the embedded public key in the signature file, or provide one with --key.
+    Checks that a file has not been tampered with by validating its Ed25519 signature.
+    Uses the public key embedded in the .sig file, or supply one explicitly with --key.
+
+    Examples:
+        filanti verify-sig document.pdf
+        filanti verify-sig document.pdf --signature document.pdf.sig
+        filanti verify-sig document.pdf --key signer.pub
     """
     try:
         # Read public key if provided
@@ -1119,8 +1169,14 @@ def checksum(
 ) -> None:
     """Compute checksum of a file (non-cryptographic).
 
-    Fast checksums for detecting accidental corruption.
-    NOT suitable for security purposes - use 'hash' or 'mac' instead.
+    Fast checksums for detecting accidental corruption (CRC32, Adler32).
+    NOT suitable for security purposes — use 'hash' or 'mac' instead.
+
+    Examples:
+        filanti checksum archive.tar.gz
+        filanti checksum archive.tar.gz --algorithm adler32
+        filanti checksum archive.tar.gz --create-file
+        filanti checksum archive.tar.gz --output archive.checksum
     """
     try:
         if create_file or output:
@@ -1181,7 +1237,13 @@ def verify_checksum_cmd(
 ) -> None:
     """Verify file checksum.
 
-    Either provide --expected value or --checksum-file with detached metadata.
+    Validates file integrity using a previously computed checksum.
+    Provide --expected value inline, or use --checksum-file for detached metadata.
+
+    Examples:
+        filanti verify-checksum archive.tar.gz --expected 3e25960a
+        filanti verify-checksum archive.tar.gz --checksum-file archive.checksum
+        filanti verify-checksum archive.tar.gz              # auto-finds .checksum file
     """
     try:
         if checksum_file or (not expected):
@@ -1599,7 +1661,14 @@ def info_hybrid(
         )
     ],
 ) -> None:
-    """Show metadata from a hybrid encrypted file."""
+    """Show metadata from a hybrid encrypted file.
+
+    Displays version, algorithm, recipient count, and creation timestamp
+    from a .henc file without decrypting it.
+
+    Examples:
+        filanti info-hybrid secret.txt.henc
+    """
     try:
         metadata = get_hybrid_file_metadata(file)
 
@@ -1624,7 +1693,14 @@ def info_hybrid(
 
 @app.command(name="list-algorithms")
 def list_algorithms() -> None:
-    """List all supported algorithms for each operation."""
+    """List every supported algorithm grouped by operation (hash, encrypt, sign, mac, checksum).
+
+    Shows the default algorithm for each category. Useful for scripting
+    and discovering available options.
+
+    Example:
+        filanti list-algorithms
+    """
     output_json({
         "success": True,
         "hash": {
