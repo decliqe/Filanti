@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from filanti import __version__
 from filanti.core.orchestrator import Orchestrator
 from filanti.policy.engine import PolicyEngine
 from filanti.threat.engine import ThreatEngine
@@ -106,6 +107,11 @@ COMMAND_HELP: dict[str, str] = {
         "  Example: hash report.pdf sha3-256\n"
         "  Algorithms: sha256 (default), sha384, sha512, sha3-256, sha3-512, blake2b"
     ),
+    "verify-hash": (
+        "Verify a file's hash against an expected value.\n"
+        "  Usage: verify-hash <file> <expected_hash> [algorithm]\n"
+        "  Example: verify-hash report.pdf abc123def... sha256"
+    ),
     "sign": (
         "Sign a file with a private key (Ed25519).\n"
         "  Usage: sign <file> --key-ref <private_key_file>\n"
@@ -122,12 +128,65 @@ COMMAND_HELP: dict[str, str] = {
         "  Example: mac data.bin --password 0a1b2c3d...\n"
         "  Algorithms: hmac-sha256 (default), hmac-sha512, hmac-blake2b"
     ),
+    "verify-mac": (
+        "Verify the HMAC of a file.\n"
+        "  Usage: verify-mac <file> --password <hex_key> --mac <hex> [--algorithm ALG]\n"
+        "  Example: verify-mac data.bin --password 0a1b2c... --mac deadbeef..."
+    ),
     "checksum": (
         "Compute a fast non-cryptographic checksum.\n"
         "  Usage: checksum <file> [algorithm]\n"
         "  Example: checksum archive.tar.gz adler32\n"
         "  Algorithms: sha256 (default), crc32, adler32"
     ),
+    "verify-checksum": (
+        "Verify a file's checksum against an expected value.\n"
+        "  Usage: verify-checksum <file> <expected> [algorithm]\n"
+        "  Example: verify-checksum archive.tar.gz 0x1a2b3c4d crc32"
+    ),
+    "keygen": (
+        "Generate a signing key pair (Ed25519 / ECDSA).\n"
+        "  Usage: keygen <output_path> [--algorithm ALG] [--password PW]\n"
+        "  Example: keygen mykey\n"
+        "           keygen mykey --algorithm ecdsa-p256\n"
+        "           keygen mykey --password s3cr3t\n"
+        "  Creates: <output_path> (private) + <output_path>.pub (public)\n"
+        "  Algorithms: ed25519 (default), ecdsa-p256, ecdsa-p384, ecdsa-p521"
+    ),
+    "keygen-asymmetric": (
+        "Generate an asymmetric key pair for hybrid encryption (X25519 / RSA).\n"
+        "  Usage: keygen-asymmetric <output_path> [--algorithm ALG] [--password PW]\n"
+        "  Example: keygen-asymmetric mykey\n"
+        "           keygen-asymmetric mykey --algorithm rsa-oaep\n"
+        "           keygen-asymmetric mykey --password s3cr3t\n"
+        "  Creates: <output_path>.pem (private) + <output_path>.pub (public)\n"
+        "  Algorithms: x25519 (default), rsa-oaep"
+    ),
+    "encrypt-pubkey": (
+        "Encrypt a file for recipients using their public keys (hybrid encryption).\n"
+        "  Usage: encrypt-pubkey <file> --pubkey <key.pub> [--pubkey <key2.pub>] [--output OUT]\n"
+        "  Example: encrypt-pubkey secret.txt --pubkey alice.pub\n"
+        "           encrypt-pubkey secret.txt --pubkey alice.pub --pubkey bob.pub\n"
+        "  Creates a .henc file that only the private-key holder can decrypt."
+    ),
+    "decrypt-privkey": (
+        "Decrypt a hybrid encrypted (.henc) file with a private key.\n"
+        "  Usage: decrypt-privkey <file.henc> --key-ref <key.pem> [--password PW] [--output OUT]\n"
+        "  Example: decrypt-privkey secret.txt.henc --key-ref mykey.pem\n"
+        "           decrypt-privkey secret.txt.henc --key-ref mykey.pem --password keypass"
+    ),
+    "info-hybrid": (
+        "Show metadata from a hybrid encrypted (.henc) file.\n"
+        "  Usage: info-hybrid <file.henc>\n"
+        "  Example: info-hybrid secret.txt.henc\n"
+        "  Displays algorithm, recipient count, and creation timestamp."
+    ),
+    "algorithms": (
+        "List all supported algorithms by category.\n"
+        "  Usage: algorithms\n"
+        "  Shows: encryption, hashing, MAC, signature, checksum, asymmetric algorithms."
+    ),
+    "version": "Show the current Filanti version.",
     "set": (
         "Change session settings.\n"
         "  Usage: set mode <name>    — change threat mode (dev, production, paranoid)\n"
@@ -190,6 +249,37 @@ _SUB_COMPLETIONS: dict[str, list[str]] = {
     "set": ["mode", "policy"],
     "use": ["mode", "policy"],
     "help": _COMMANDS,
+    "kms": ["status", "create-key", "list", "encrypt", "decrypt"],
+}
+
+# Flag completions per command
+_FLAG_COMPLETIONS: dict[str, list[str]] = {
+    "encrypt": ["--password", "--output", "--algorithm", "--remove-source", "--no-secure-delete"],
+    "decrypt": ["--password", "--output", "--remove-source", "--no-secure-delete"],
+    "sign": ["--key-ref"],
+    "verify": ["--sig", "--key-ref"],
+    "mac": ["--password", "--algorithm"],
+    "verify-mac": ["--password", "--mac", "--algorithm"],
+    "checksum": [],
+    "verify-checksum": [],
+    "keygen": ["--algorithm", "--password"],
+    "keygen-asymmetric": ["--algorithm", "--password"],
+    "encrypt-pubkey": ["--pubkey", "--output", "--algorithm"],
+    "decrypt-privkey": ["--key-ref", "--password", "--output"],
+}
+
+# Algorithm values per command
+_ALGORITHM_VALUES: dict[str, list[str]] = {
+    "encrypt": ["aes-256-gcm", "chacha20-poly1305"],
+    "hash": ["sha256", "sha384", "sha512", "sha3-256", "sha3-384", "sha3-512", "blake2b"],
+    "verify-hash": ["sha256", "sha384", "sha512", "sha3-256", "sha3-384", "sha3-512", "blake2b"],
+    "mac": ["hmac-sha256", "hmac-sha384", "hmac-sha512", "hmac-sha3-256", "hmac-blake2b"],
+    "verify-mac": ["hmac-sha256", "hmac-sha384", "hmac-sha512", "hmac-sha3-256", "hmac-blake2b"],
+    "checksum": ["sha256", "crc32", "adler32", "xxhash64"],
+    "verify-checksum": ["sha256", "crc32", "adler32", "xxhash64"],
+    "keygen": ["ed25519", "ecdsa-p256", "ecdsa-p384", "ecdsa-p521"],
+    "keygen-asymmetric": ["x25519", "rsa-oaep"],
+    "encrypt-pubkey": ["x25519", "rsa-oaep"],
 }
 
 
@@ -212,7 +302,8 @@ class _Completer:
                 self._matches = [c + " " for c in _COMMANDS if c.startswith(text)]
             elif n_parts >= 1:
                 cmd = parts[0].lower()
-                # Second token completion
+
+                # Second token completion for sub-commands
                 if cmd in _SUB_COMPLETIONS and (n_parts == 1 or (n_parts == 2 and not stripped.endswith(" "))):
                     subs = _SUB_COMPLETIONS[cmd]
                     self._matches = [s + " " for s in subs if s.startswith(text)]
@@ -227,12 +318,48 @@ class _Completer:
                         self._matches = [p + " " for p in policies if p.startswith(text)]
                     else:
                         self._matches = []
+                elif text.startswith("-") and cmd in _FLAG_COMPLETIONS:
+                    # Complete flag names
+                    flags = _FLAG_COMPLETIONS[cmd]
+                    self._matches = [f + " " for f in flags if f.startswith(text)]
+                elif n_parts >= 2 and parts[-1 if not stripped.endswith(" ") else -2] in ("--algorithm", "-a"):
+                    # Complete algorithm values
+                    if cmd in _ALGORITHM_VALUES:
+                        self._matches = [a + " " for a in _ALGORITHM_VALUES[cmd] if a.startswith(text)]
+                    else:
+                        self._matches = []
                 else:
-                    self._matches = []
+                    # File path completion
+                    self._matches = self._complete_path(text)
             else:
                 self._matches = []
 
         return self._matches[state] if state < len(self._matches) else None
+
+    @staticmethod
+    def _complete_path(text: str) -> list[str]:
+        """Complete file/directory paths."""
+        if not text:
+            p = Path(".")
+            prefix = ""
+        else:
+            p = Path(text)
+            prefix = text
+
+        try:
+            if p.is_dir() and text.endswith(os.sep):
+                children = list(p.iterdir())
+            else:
+                parent = p.parent if p.parent != p else Path(".")
+                children = [c for c in parent.iterdir() if str(c).startswith(prefix)]
+        except OSError:
+            return []
+
+        matches = []
+        for c in sorted(children):
+            s = str(c) + (os.sep if c.is_dir() else " ")
+            matches.append(s)
+        return matches[:50]  # limit to avoid flooding
 
 
 # ------------------------------------------------------------------
@@ -332,7 +459,9 @@ class REPL:
         cmd = parts[0].lower()
         args = parts[1:]
 
-        handler = getattr(self, f"_cmd_{cmd}", None)
+        # Hyphenated commands → underscore method names
+        method_name = f"_cmd_{cmd.replace('-', '_')}"
+        handler = getattr(self, method_name, None)
         if handler is not None:
             try:
                 handler(args)
@@ -363,22 +492,36 @@ class REPL:
             f"  {C.CYAN}set mode <name>{C.RESET}       — change threat mode (dev, production, paranoid)\n"
             f"  {C.CYAN}set policy <name>{C.RESET}     — change active policy (default, enterprise, relaxed)\n"
             f"  {C.CYAN}use policy <name>{C.RESET}     — alias for set policy\n"
+            f"\n  {C.BOLD}Encryption:{C.RESET}\n"
             f"  {C.CYAN}encrypt{C.RESET} <file> --password <PW> [--output OUT] [--algorithm ALG]\n"
-            f"          [--remove-source] [--no-secure-delete]\n"
             f"  {C.CYAN}decrypt{C.RESET} <file> --password <PW> [--output OUT]\n"
-            f"          [--remove-source] [--no-secure-delete]\n"
-            f"  {C.CYAN}hash{C.RESET} <file> [algorithm]   — compute cryptographic hash\n"
+            f"\n  {C.BOLD}Hashing:{C.RESET}\n"
+            f"  {C.CYAN}hash{C.RESET} <file> [algorithm]         — compute cryptographic hash\n"
+            f"  {C.CYAN}verify-hash{C.RESET} <file> <expected> [algorithm]  — verify hash\n"
+            f"\n  {C.BOLD}Signatures:{C.RESET}\n"
+            f"  {C.CYAN}keygen{C.RESET} <output> [--algorithm ALG]  — generate signing key pair\n"
             f"  {C.CYAN}sign{C.RESET} <file> --key-ref <private_key>\n"
             f"  {C.CYAN}verify{C.RESET} <file> --sig <hex> --key-ref <public_key>\n"
+            f"\n  {C.BOLD}Integrity:{C.RESET}\n"
             f"  {C.CYAN}mac{C.RESET} <file> --password <hex_key> [--algorithm ALG]\n"
+            f"  {C.CYAN}verify-mac{C.RESET} <file> --password <hex_key> --mac <hex>\n"
             f"  {C.CYAN}checksum{C.RESET} <file> [algorithm]\n"
+            f"  {C.CYAN}verify-checksum{C.RESET} <file> <expected> [algorithm]\n"
+            f"\n  {C.BOLD}Hybrid / Asymmetric:{C.RESET}\n"
+            f"  {C.CYAN}keygen-asymmetric{C.RESET} <output> [--algorithm ALG]  — generate key pair\n"
+            f"  {C.CYAN}encrypt-pubkey{C.RESET} <file> --pubkey <key.pub>      — hybrid encrypt\n"
+            f"  {C.CYAN}decrypt-privkey{C.RESET} <file.henc> --key-ref <key.pem>  — hybrid decrypt\n"
+            f"  {C.CYAN}info-hybrid{C.RESET} <file.henc>      — show .henc metadata\n"
+            f"\n  {C.BOLD}KMS & Utility:{C.RESET}\n"
             f"  {C.CYAN}kms{C.RESET} <subcommand>        — key management (create, list, encrypt, decrypt)\n"
-            f"  {C.CYAN}status{C.RESET}                — show session state\n"
-            f"  {C.CYAN}history{C.RESET}               — show command history\n"
-            f"  {C.CYAN}modes{C.RESET}                 — list available threat modes\n"
-            f"  {C.CYAN}policies{C.RESET}              — list available policies\n"
-            f"  {C.CYAN}clear{C.RESET}                 — clear the terminal screen\n"
-            f"  {C.CYAN}exit{C.RESET} / {C.CYAN}quit{C.RESET}           — exit the REPL\n"
+            f"  {C.CYAN}algorithms{C.RESET}             — list all supported algorithms\n"
+            f"  {C.CYAN}version{C.RESET}                — show Filanti version\n"
+            f"  {C.CYAN}status{C.RESET}                 — show session state\n"
+            f"  {C.CYAN}history{C.RESET}                — show command history\n"
+            f"  {C.CYAN}modes{C.RESET}                  — list available threat modes\n"
+            f"  {C.CYAN}policies{C.RESET}               — list available policies\n"
+            f"  {C.CYAN}clear{C.RESET}                  — clear the terminal screen\n"
+            f"  {C.CYAN}exit{C.RESET} / {C.CYAN}quit{C.RESET}            — exit the REPL\n"
             f"\n  {C.DIM}Tip: Use Tab for auto-completion. Type 'help <command>' for details.{C.RESET}\n"
         )
 
@@ -609,6 +752,217 @@ class REPL:
             },
         )
         self._print(f"{result.checksum}")  # type: ignore[attr-defined]
+
+    # --- Verification commands ---
+
+    def _cmd_verify_hash(self, args: list[str]) -> None:
+        if len(args) < 2:
+            self._print("Usage: verify-hash <file> <expected_hash> [algorithm]")
+            return
+        file_path = args[0]
+        expected = args[1]
+        algorithm = args[2] if len(args) > 2 else "sha256"
+        result = self._orch.execute(
+            "hash",
+            {"input_path": file_path, "algorithm": algorithm},
+        )
+        digest = result.hash  # type: ignore[attr-defined]
+        if digest.lower() == expected.lower():
+            self._print(f"{C.GREEN}Valid{C.RESET} — hash matches")
+        else:
+            self._print(f"{C.RED}INVALID{C.RESET} — hash mismatch")
+            self._print(f"  expected: {expected}")
+            self._print(f"  actual:   {digest}")
+
+    def _cmd_verify_mac(self, args: list[str]) -> None:
+        opts = self._parse_file_opts(args)
+        if opts is None:
+            return
+        key_hex = opts.get("password")
+        # Parse --mac flag
+        mac_hex: str | None = None
+        for i, a in enumerate(args):
+            if a == "--mac" and i + 1 < len(args):
+                mac_hex = args[i + 1]
+                break
+        if key_hex is None or mac_hex is None:
+            self._print("Usage: verify-mac <file> --password <hex_key> --mac <hex> [--algorithm ALG]")
+            return
+        key_bytes = bytes.fromhex(key_hex)
+        algorithm = opts.get("algorithm", "hmac-sha256")
+        from filanti.integrity.mac import compute_file_mac
+        computed = compute_file_mac(opts["file"], key_bytes, algorithm)
+        import secrets as _secrets
+        if _secrets.compare_digest(computed.mac, mac_hex):
+            self._print(f"{C.GREEN}Valid{C.RESET} — MAC matches")
+        else:
+            self._print(f"{C.RED}INVALID{C.RESET} — MAC mismatch")
+
+    def _cmd_verify_checksum(self, args: list[str]) -> None:
+        if len(args) < 2:
+            self._print("Usage: verify-checksum <file> <expected> [algorithm]")
+            return
+        file_path = args[0]
+        expected = args[1]
+        algorithm = args[2] if len(args) > 2 else "sha256"
+        from filanti.integrity.checksum import compute_file_checksum
+        result = compute_file_checksum(file_path, algorithm)
+        if result.checksum.lower() == expected.lower():
+            self._print(f"{C.GREEN}Valid{C.RESET} — checksum matches")
+        else:
+            self._print(f"{C.RED}INVALID{C.RESET} — checksum mismatch")
+            self._print(f"  expected: {expected}")
+            self._print(f"  actual:   {result.checksum}")
+
+    # --- Key generation commands ---
+
+    def _cmd_keygen(self, args: list[str]) -> None:
+        opts = self._parse_file_opts(args)
+        if opts is None:
+            self._print("Usage: keygen <output_path> [--algorithm ALG] [--password PW]")
+            return
+        output_path = opts["file"]
+        algorithm = opts.get("algorithm", "ed25519")
+        password_str = opts.get("password")
+        password_bytes = password_str.encode("utf-8") if isinstance(password_str, str) else None
+
+        from filanti.integrity.signature import generate_keypair, save_keypair
+        keypair = generate_keypair(algorithm, password_bytes)
+        priv_path, pub_path = save_keypair(keypair, Path(output_path))
+        self._print(f"{C.GREEN}Generated{C.RESET} {algorithm} signing key pair")
+        self._print(f"  private: {priv_path}")
+        self._print(f"  public:  {pub_path}")
+
+    def _cmd_keygen_asymmetric(self, args: list[str]) -> None:
+        opts = self._parse_file_opts(args)
+        if opts is None:
+            self._print("Usage: keygen-asymmetric <output_path> [--algorithm ALG] [--password PW]")
+            return
+        output_path = opts["file"]
+        algorithm = opts.get("algorithm", "x25519")
+        password_str = opts.get("password")
+        password_bytes = password_str.encode("utf-8") if isinstance(password_str, str) else None
+
+        from filanti.crypto.asymmetric import (
+            generate_asymmetric_keypair,
+            save_asymmetric_keypair,
+        )
+        keypair = generate_asymmetric_keypair(algorithm, password_bytes)
+        priv_path, pub_path = save_asymmetric_keypair(keypair, Path(output_path))
+        self._print(f"{C.GREEN}Generated{C.RESET} {algorithm} asymmetric key pair")
+        self._print(f"  private: {priv_path}")
+        self._print(f"  public:  {pub_path}")
+
+    # --- Hybrid encryption commands ---
+
+    def _cmd_encrypt_pubkey(self, args: list[str]) -> None:
+        if not args:
+            self._print(
+                "Usage: encrypt-pubkey <file> --pubkey <key.pub> "
+                "[--pubkey <key2.pub>] [--output OUT]"
+            )
+            return
+        file_path = args[0]
+        pubkeys: list[str] = []
+        output: str | None = None
+        algorithm = "x25519"
+        i = 1
+        while i < len(args):
+            a = args[i]
+            if a in ("--pubkey", "-k") and i + 1 < len(args):
+                pubkeys.append(args[i + 1])
+                i += 2
+            elif a in ("--output", "-o") and i + 1 < len(args):
+                output = args[i + 1]
+                i += 2
+            elif a in ("--algorithm", "-a") and i + 1 < len(args):
+                algorithm = args[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        if not pubkeys:
+            self._print(f"{C.RED}Error:{C.RESET} At least one --pubkey required")
+            return
+
+        from filanti.crypto.asymmetric import (
+            AsymmetricAlgorithm,
+            hybrid_encrypt_file,
+        )
+        out_path = Path(output) if output else Path(file_path + ".henc")
+        metadata = hybrid_encrypt_file(
+            input_path=Path(file_path),
+            output_path=out_path,
+            recipient_public_keys=pubkeys,
+            algorithm=AsymmetricAlgorithm(algorithm),
+        )
+        self._print(f"{C.GREEN}Hybrid Encrypted{C.RESET} → {out_path}")
+        self._print(f"  algorithm: {metadata.asymmetric_algorithm}")
+        self._print(f"  recipients: {metadata.recipient_count}")
+
+    def _cmd_decrypt_privkey(self, args: list[str]) -> None:
+        opts = self._parse_file_opts(args)
+        if opts is None:
+            self._print("Usage: decrypt-privkey <file.henc> --key-ref <key.pem> [--password PW] [--output OUT]")
+            return
+        file_path = opts["file"]
+        key_path = opts.get("key_ref")
+        if key_path is None:
+            self._print(f"{C.RED}Error:{C.RESET} --key-ref required (path to private key)")
+            return
+        password_str = opts.get("password")
+        password_bytes = password_str.encode("utf-8") if isinstance(password_str, str) else None
+        output = opts.get("output")
+
+        from filanti.crypto.asymmetric import hybrid_decrypt_file
+        if output is None:
+            file_str = str(file_path)
+            out_path = Path(file_str[:-5]) if file_str.endswith(".henc") else Path(file_str + ".dec")
+        else:
+            out_path = Path(output)
+
+        size = hybrid_decrypt_file(
+            input_path=Path(file_path),
+            output_path=out_path,
+            private_key=str(key_path),
+            password=password_bytes,
+        )
+        self._print(f"{C.GREEN}Hybrid Decrypted{C.RESET} → {out_path}  ({size} bytes)")
+
+    def _cmd_info_hybrid(self, args: list[str]) -> None:
+        if not args:
+            self._print("Usage: info-hybrid <file.henc>")
+            return
+        file_path = args[0]
+        from filanti.crypto.asymmetric import get_hybrid_file_metadata
+        metadata = get_hybrid_file_metadata(Path(file_path))
+        self._print(f"  version:    {metadata.version}")
+        self._print(f"  asymmetric: {metadata.asymmetric_algorithm}")
+        self._print(f"  symmetric:  {metadata.symmetric_algorithm}")
+        self._print(f"  recipients: {metadata.recipient_count}")
+        self._print(f"  created:    {metadata.created_at}")
+
+    # --- Utility commands ---
+
+    def _cmd_algorithms(self, _args: list[str]) -> None:
+        from filanti.hashing import crypto_hash
+        from filanti.crypto import EncryptionAlgorithm
+        from filanti.crypto.asymmetric import get_supported_asymmetric_algorithms
+        from filanti.integrity.mac import MACAlgorithm
+        from filanti.integrity.signature import SignatureAlgorithm
+        from filanti.integrity.checksum import ChecksumAlgorithm
+
+        self._print(f"\n{C.BOLD}Supported Algorithms:{C.RESET}")
+        self._print(f"\n  {C.CYAN}Encryption:{C.RESET}  {', '.join(e.value for e in EncryptionAlgorithm)}")
+        self._print(f"  {C.CYAN}Asymmetric:{C.RESET}  {', '.join(get_supported_asymmetric_algorithms())}")
+        self._print(f"  {C.CYAN}Hashing:{C.RESET}     {', '.join(crypto_hash.get_supported_algorithms())}")
+        self._print(f"  {C.CYAN}MAC:{C.RESET}         {', '.join(m.value for m in MACAlgorithm)}")
+        self._print(f"  {C.CYAN}Signature:{C.RESET}   {', '.join(s.value for s in SignatureAlgorithm)}")
+        self._print(f"  {C.CYAN}Checksum:{C.RESET}    {', '.join(c.value for c in ChecksumAlgorithm)}")
+        self._print("")
+
+    def _cmd_version(self, _args: list[str]) -> None:
+        self._print(f"Filanti v{__version__}")
 
     # --- KMS operations ---------------------------------------------------
 

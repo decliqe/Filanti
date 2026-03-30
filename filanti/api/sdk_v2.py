@@ -620,3 +620,240 @@ class Filanti:
 
         engine = CipherEngine(EncryptionAlgorithm(algorithm))
         return engine.decrypt(key, ciphertext, nonce)
+
+    # ------------------------------------------------------------------
+    # Key generation (delegates to v1 modules directly)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    @unsafe
+    def generate_keypair(
+        algorithm: str = "ed25519",
+        password: bytes | None = None,
+    ) -> Any:
+        """Generate a signing key pair (Ed25519 / ECDSA).
+
+        Returns a ``KeyPair`` with ``private_key``, ``public_key``,
+        ``algorithm`` attributes.
+        """
+        from filanti.integrity.signature import generate_keypair
+        return generate_keypair(algorithm, password)
+
+    @staticmethod
+    @unsafe
+    def save_keypair(
+        keypair: Any,
+        output_path: str | Path,
+    ) -> tuple[Path, Path]:
+        """Save a signing key pair to files.
+
+        Returns ``(private_key_path, public_key_path)``.
+        """
+        from filanti.integrity.signature import save_keypair
+        return save_keypair(keypair, Path(output_path))
+
+    @staticmethod
+    @unsafe
+    def generate_key(size: int = 32) -> bytes:
+        """Generate *size* random bytes suitable for use as a symmetric key."""
+        from filanti.crypto.key_management import generate_key
+        return generate_key(size)
+
+    @staticmethod
+    @unsafe
+    def generate_asymmetric_keypair(
+        algorithm: str = "x25519",
+        password: bytes | None = None,
+        rsa_key_size: int = 4096,
+    ) -> Any:
+        """Generate an asymmetric key pair for hybrid encryption.
+
+        Returns an ``AsymmetricKeyPair`` object.
+        """
+        from filanti.crypto.asymmetric import generate_asymmetric_keypair
+        return generate_asymmetric_keypair(algorithm, password, rsa_key_size)
+
+    @staticmethod
+    @unsafe
+    def save_asymmetric_keypair(
+        keypair: Any,
+        output_path: str | Path,
+    ) -> tuple[Path, Path]:
+        """Save an asymmetric key pair to files.
+
+        Returns ``(private_key_path, public_key_path)``.
+        """
+        from filanti.crypto.asymmetric import save_asymmetric_keypair
+        return save_asymmetric_keypair(keypair, Path(output_path))
+
+    # ------------------------------------------------------------------
+    # Hybrid encryption (delegates to v1 modules directly)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    @unsafe
+    def hybrid_encrypt(
+        path: str | Path,
+        public_keys: list[str | Path],
+        *,
+        output: str | Path | None = None,
+        algorithm: str = "x25519",
+        recipient_ids: list[str] | None = None,
+    ) -> Any:
+        """Encrypt a file for recipients using public-key hybrid encryption."""
+        from filanti.crypto.asymmetric import (
+            AsymmetricAlgorithm,
+            hybrid_encrypt_file,
+        )
+        out_path = Path(output) if output else Path(str(path) + ".henc")
+        return hybrid_encrypt_file(
+            input_path=Path(path),
+            output_path=out_path,
+            recipient_public_keys=[str(k) for k in public_keys],
+            algorithm=AsymmetricAlgorithm(algorithm),
+            recipient_ids=recipient_ids,
+        )
+
+    @staticmethod
+    @unsafe
+    def hybrid_decrypt(
+        path: str | Path,
+        private_key: str | Path,
+        *,
+        output: str | Path | None = None,
+        password: bytes | None = None,
+        recipient_id: str | None = None,
+    ) -> int:
+        """Decrypt a hybrid encrypted file. Returns size in bytes."""
+        from filanti.crypto.asymmetric import hybrid_decrypt_file
+        if output is None:
+            s = str(path)
+            out_path = Path(s[:-5]) if s.endswith(".henc") else Path(s + ".dec")
+        else:
+            out_path = Path(output)
+        return hybrid_decrypt_file(
+            input_path=Path(path),
+            output_path=out_path,
+            private_key=str(private_key),
+            password=password,
+            recipient_id=recipient_id,
+        )
+
+    @staticmethod
+    @unsafe
+    def hybrid_encrypt_bytes(
+        data: bytes,
+        public_keys: list[str | Path],
+        *,
+        algorithm: str = "x25519",
+    ) -> Any:
+        """Encrypt bytes for recipients using hybrid encryption."""
+        from filanti.crypto.asymmetric import (
+            AsymmetricAlgorithm,
+            hybrid_encrypt_bytes as _heb,
+        )
+        return _heb(data, [str(k) for k in public_keys], AsymmetricAlgorithm(algorithm))
+
+    @staticmethod
+    @unsafe
+    def hybrid_decrypt_bytes(
+        data: Any,
+        private_key: str | Path,
+        *,
+        password: bytes | None = None,
+    ) -> bytes:
+        """Decrypt hybrid encrypted bytes."""
+        from filanti.crypto.asymmetric import hybrid_decrypt_bytes as _hdb
+        return _hdb(data, str(private_key), password)
+
+    @staticmethod
+    @unsafe
+    def get_hybrid_file_info(path: str | Path) -> Any:
+        """Read metadata from a hybrid encrypted file."""
+        from filanti.crypto.asymmetric import get_hybrid_file_metadata
+        return get_hybrid_file_metadata(Path(path))
+
+    # ------------------------------------------------------------------
+    # Verification helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def verify_hash(
+        cls,
+        path: str | Path,
+        expected: str,
+        algorithm: str = "sha256",
+        _orchestrator: Orchestrator | None = None,
+    ) -> bool:
+        """Hash a file and compare against *expected*. Returns True if match."""
+        result = cls.hash_file(path, algorithm, _orchestrator)
+        import secrets as _sec
+        return _sec.compare_digest(result.hash.lower(), expected.lower())
+
+    @classmethod
+    def verify_mac_value(
+        cls,
+        path: str | Path,
+        *,
+        key: bytes,
+        expected_mac: str,
+        algorithm: str = "hmac-sha256",
+        _orchestrator: Orchestrator | None = None,
+    ) -> bool:
+        """Compute MAC and compare against *expected_mac*."""
+        result = cls.mac(path, key=key, algorithm=algorithm, _orchestrator=_orchestrator)
+        import secrets as _sec
+        return _sec.compare_digest(result.mac.lower(), expected_mac.lower())
+
+    @classmethod
+    def verify_checksum_value(
+        cls,
+        path: str | Path,
+        expected: str,
+        algorithm: str = "crc32",
+        _orchestrator: Orchestrator | None = None,
+    ) -> bool:
+        """Compute checksum and compare against *expected*."""
+        result = cls.checksum(path, algorithm, _orchestrator=_orchestrator)
+        return result.checksum.lower() == expected.lower()
+
+    # ------------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def algorithms() -> dict[str, Any]:
+        """Return all supported algorithms grouped by category."""
+        from filanti.hashing import crypto_hash
+        from filanti.crypto import EncryptionAlgorithm
+        from filanti.crypto.asymmetric import get_supported_asymmetric_algorithms
+        from filanti.integrity.mac import MACAlgorithm
+        from filanti.integrity.signature import SignatureAlgorithm
+        from filanti.integrity.checksum import ChecksumAlgorithm
+
+        return {
+            "hash": crypto_hash.get_supported_algorithms(),
+            "encryption": [e.value for e in EncryptionAlgorithm],
+            "asymmetric": get_supported_asymmetric_algorithms(),
+            "mac": [m.value for m in MACAlgorithm],
+            "signature": [s.value for s in SignatureAlgorithm],
+            "checksum": [c.value for c in ChecksumAlgorithm],
+        }
+
+    @staticmethod
+    def resolve_secret(value: str, allow_empty: bool = False) -> str:
+        """Resolve an ENV reference (e.g. ``ENV:MY_VAR``) to its value."""
+        from filanti.core.secrets import resolve_secret
+        return resolve_secret(value, allow_empty)
+
+    @staticmethod
+    def is_env_reference(value: str) -> bool:
+        """Check if *value* looks like an ENV reference pattern."""
+        from filanti.core.secrets import is_env_reference
+        return is_env_reference(value)
+
+    @staticmethod
+    def load_dotenv(path: str | Path) -> None:
+        """Load environment variables from a .env file."""
+        from filanti.core.secrets import load_dotenv
+        load_dotenv(str(path))

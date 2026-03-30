@@ -1,16 +1,26 @@
-<h1 align="center">
- FILANTI
-</h1>
 <p align="center">
-  <strong>A modular, security-focused file framework for Python</strong>
+<pre align="center">
+███████╗██╗██╗      █████╗ ███╗   ██╗████████╗██╗
+██╔════╝██║██║     ██╔══██╗████╗  ██║╚══██╔══╝██║
+█████╗  ██║██║     ███████║██╔██╗ ██║   ██║   ██║
+██╔══╝  ██║██║     ██╔══██║██║╚██╗██║   ██║   ██║
+██║     ██║███████╗██║  ██║██║ ╚████║   ██║   ██║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝
+</pre>
+</p>
+
+<h3 align="center">A secure cryptographic file execution platform</h3>
+<p align="center">
+  Policy enforcement · Key management · Stateful control · v2.0
 </p>
 
 <p align="center">
+  <a href="#whats-new-in-v2">What's New</a> •
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
+  <a href="#interactive-repl">REPL</a> •
   <a href="#cli-reference">CLI</a> •
-  <a href="#python-sdk">SDK</a> •
+  <a href="#python-sdk-v2">SDK v2</a> •
   <a href="#security-model">Security</a>
 </p>
 
@@ -18,549 +28,262 @@
 
 ## Overview
 
-**Filanti** is a Python framework providing secure-by-default primitives for:
+Filanti is a production-grade cryptographic toolkit for Python. It provides **encryption**, **hashing**, **digital signatures**, **HMAC integrity**, **checksums**, **hybrid (public-key) encryption**, **key derivation**, and **streaming large-file support** — all behind a unified API, CLI, and interactive REPL.
 
--  **File Encryption** - AES-256-GCM, ChaCha20-Poly1305 with password-based encryption
--  **Asymmetric Encryption** - Hybrid encryption with X25519, RSA-OAEP for multi-recipient file exchange
--  **Cryptographic Hashing** - SHA-256/384/512, SHA3, BLAKE2b
--  **Integrity Verification** - HMAC, digital signatures, checksums
--  **Streaming Support** - Memory-efficient processing of large files
--  **Plugin Architecture** - Extensible algorithm support
--  **ENV-Based Secrets** - Secure secret injection for automation workflows
+**Key capabilities:**
 
-Filanti acts as a **secure abstraction layer** over cryptographic operations, avoiding unsafe custom implementations while remaining extensible and auditable.
+| Category | Algorithms |
+|---|---|
+| Symmetric Encryption | AES-256-GCM, ChaCha20-Poly1305 (Argon2id KDF) |
+| Asymmetric / Hybrid | X25519, RSA-OAEP (multi-recipient) |
+| Hashing | SHA-256/384/512, SHA3-256/384/512, BLAKE2b |
+| HMAC | HMAC-SHA256/384/512, HMAC-SHA3-256, HMAC-BLAKE2b |
+| Digital Signatures | Ed25519, ECDSA P-256/P-384/P-521 |
+| Checksums | CRC32, Adler32, XXHash64 |
+| Key Derivation | Argon2id, Scrypt |
+
+---
+
+## What's New in v2
+
+Filanti v2 is a ground-up redesign of the execution model. Every operation now flows through a **pipeline** that enforces security policy before reaching the crypto engine:
+
+```
+ Request
+    │
+    ▼
+┌──────────────┐     ┌──────────────┐     ┌─────────┐     ┌─────────────┐
+│ Threat Engine │ ──▶ │ Policy Engine │ ──▶ │   KMS   │ ──▶ │ Engine Router│
+│  (mode)       │     │ (enforcement) │     │ (keys)  │     │  (dispatch)  │
+└──────────────┘     └──────────────┘     └─────────┘     └──────┬──────┘
+                                                                  │
+                              ┌────────────┬──────────┬───────────┤
+                              ▼            ▼          ▼           ▼
+                         CryptoEngine  HashEngine  IntegrityEngine  KDFEngine
+```
+
+### v1 → v2 Transition Highlights
+
+| Feature | v1 | v2 |
+|---|---|---|
+| Execution model | Direct function calls | Orchestrator pipeline |
+| Threat modes | — | dev · production · paranoid |
+| Policy enforcement | — | default · enterprise · relaxed |
+| Key management | Manual | Built-in KMS with envelope encryption |
+| Interactive mode | — | Full REPL with tab-completion & history |
+| Security tests | Basic | 380+ tests (OWASP, timing, tampering) |
+| Secure deletion | — | Multi-pass overwrite with `--remove-source` |
+| ENV secrets | `ENV:VAR` only | `ENV:VAR`, `$env:VAR`, `${VAR}`, `env.VAR` |
+| v1 compatibility | — | ✅ Full backward compatibility |
+
+### Threat Modes
+
+| Mode | Description |
+|---|---|
+| `dev` | Relaxed — fast iteration, minimal KDF cost |
+| `production` | **Default** — balanced security and performance |
+| `paranoid` | Maximum — strongest KDF, strictest algorithms |
+
+### Policy Enforcement
+
+| Policy | Description |
+|---|---|
+| `default` | Sensible defaults for most applications |
+| `enterprise` | Stricter — minimum password lengths, algorithm restrictions |
+| `relaxed` | Minimal enforcement for testing |
+
+---
 
 ## Installation
 
-### From PyPI
+### Requirements
+
+- Python ≥ 3.10
+- `cryptography` ≥ 43.0
+- `argon2-cffi` ≥ 23.1
+- `xxhash` ≥ 3.0
+
+### Install
 
 ```bash
 pip install filanti
 ```
 
-### From Source
+### Development
 
 ```bash
-git clone https://github.com/decliqe/filanti.git
+git clone https://github.com/decliqe/Filanti.git
 cd filanti
-pip install -e .
-```
-
-### Development Installation
-
-```bash
 pip install -e ".[dev]"
 ```
-
-This includes testing and linting tools: pytest, pytest-cov, ruff, mypy.
-
-## Requirements
-
-- **Python**: 3.11 or higher
-- **Dependencies**:
-  - `cryptography>=42.0.0` - Core cryptographic operations
-  - `typer>=0.9.0` - CLI framework
-  - `argon2-cffi>=23.1.0` - Password hashing and KDF
 
 ---
 
 ## Quick Start
 
-### Python SDK
+### Python SDK (v2 — recommended)
+
+```python
+from filanti.api.sdk_v2 import Filanti
+
+# Encrypt a file (routes through Orchestrator → policy check → KMS → engine)
+Filanti.encrypt("secret.txt", password="my-password")
+
+# Decrypt
+Filanti.decrypt("secret.txt.enc", password="my-password")
+
+# Hash
+result = Filanti.hash_file("document.pdf")
+print(result.hash)
+
+# Sign & verify
+keypair = Filanti.generate_keypair()  # Ed25519
+sig = Filanti.sign("document.pdf", private_key=keypair.private_key)
+ok = Filanti.verify("document.pdf",
+                     signature=sig.signature,
+                     public_key=keypair.public_key)
+print(ok.valid)
+
+# Hybrid (public-key) encryption
+akp = Filanti.generate_asymmetric_keypair()  # X25519
+Filanti.save_asymmetric_keypair(akp, "alice")
+Filanti.hybrid_encrypt("secret.txt", ["alice.pub"])
+Filanti.hybrid_decrypt("secret.txt.henc", "alice.pem")
+
+# List all algorithms
+print(Filanti.algorithms())
+```
+
+### Python SDK (v1 — backward compatible)
 
 ```python
 from filanti.api import Filanti
 
-# Hash a file
+# All v1 functions still work exactly as before
 result = Filanti.hash_file("document.pdf")
-print(f"SHA-256: {result.hash}")
-
-# Encrypt with password
-Filanti.encrypt("secret.txt", password="my-secure-password")
-
-# Decrypt
-Filanti.decrypt("secret.txt.enc", password="my-secure-password")
-
-# Asymmetric encryption (for secure file sharing)
-keypair = Filanti.generate_asymmetric_keypair()
-Filanti.save_asymmetric_keypair(keypair, "mykey.pem")
-Filanti.hybrid_encrypt("secret.txt", ["recipient.pub"])
-Filanti.hybrid_decrypt("secret.txt.henc", "mykey.pem")
-
-# Generate signing keys
-keypair = Filanti.generate_keypair()
-
-# Sign a file
-signature = Filanti.sign_file("document.pdf", keypair.private_key, create_file=True)
-
-# Verify signature
-Filanti.verify_signature_file("document.pdf")
+Filanti.encrypt("secret.txt", password="my-password")
+Filanti.decrypt("secret.txt.enc", password="my-password")
 ```
 
-### Command Line
+### CLI
 
 ```bash
-# Hash a file
-filanti hash document.pdf
-
-# Encrypt a file
+# Encrypt / decrypt
 filanti encrypt secret.txt --password "my-password"
-
-# Decrypt a file
 filanti decrypt secret.txt.enc --password "my-password"
 
-# Asymmetric encryption (for secure file sharing)
-filanti keygen-asymmetric mykey
-filanti encrypt-pubkey secret.txt --pubkey recipient.pub
-filanti decrypt-privkey secret.txt.henc --privkey mykey.pem
+# Hash
+filanti hash document.pdf --algorithm sha3-256
 
-# Generate signing keys
-filanti keygen my_key --protect
+# Sign / verify
+filanti keygen mykey
+filanti sign document.pdf --key mykey
+filanti verify-sig document.pdf --key mykey.pub
 
-# Sign a file
-filanti sign document.pdf --key my_key
-
-# Verify signature
-filanti verify-sig document.pdf
+# Hybrid encryption
+filanti keygen-asymmetric alice
+filanti encrypt-pubkey secret.txt --pubkey alice.pub
+filanti decrypt-privkey secret.txt.henc --privkey alice.pem
 ```
 
 ---
 
-## Features
+## Interactive REPL
 
-###  Encryption
-
-Modern authenticated encryption with automatic integrity verification.
-
-| Algorithm | Description | Key Size | Use Case |
-|-----------|-------------|----------|----------|
-| `aes-256-gcm` | AES-256 in GCM mode (default) | 256-bit | General purpose, hardware-accelerated |
-| `chacha20-poly1305` | ChaCha20 with Poly1305 MAC | 256-bit | Excellent software performance |
-
-**Password-Based Encryption:**
-- Uses **Argon2id** (OWASP recommended) for key derivation
-- Automatic salt generation (32 bytes)
-- Secure memory handling for passwords
-
-```python
-from filanti.api import Filanti
-
-# Password-based encryption
-Filanti.encrypt("file.txt", password="secure-password")
-Filanti.decrypt("file.txt.enc", password="secure-password")
-
-# Raw key encryption
-key = Filanti.generate_key(32)  # 256-bit key
-Filanti.encrypt("file.txt", key=key)
-```
-
-###  Hashing
-
-Cryptographic hash functions for file fingerprinting and integrity.
-
-| Algorithm | Digest Size | Description |
-|-----------|-------------|-------------|
-| `sha256` | 256-bit | SHA-2 family (default) |
-| `sha384` | 384-bit | SHA-2 family |
-| `sha512` | 512-bit | SHA-2 family |
-| `sha3-256` | 256-bit | SHA-3 family |
-| `sha3-384` | 384-bit | SHA-3 family |
-| `sha3-512` | 512-bit | SHA-3 family |
-| `blake2b` | 512-bit | Modern, fast hash |
-
-```python
-from filanti.api import Filanti
-
-# Hash bytes
-result = Filanti.hash(b"Hello, Filanti!")
-print(result.hash)
-
-# Hash file with specific algorithm
-result = Filanti.hash_file("document.pdf", algorithm="blake2b")
-
-# Verify hash
-is_valid = Filanti.verify_file_hash("document.pdf", expected_hash)
-```
-
-###  Integrity Verification
-
-#### HMAC (Message Authentication Code)
-
-Keyed integrity verification for detecting tampering.
-
-| Algorithm | Description |
-|-----------|-------------|
-| `hmac-sha256` | HMAC with SHA-256 (default) |
-| `hmac-sha384` | HMAC with SHA-384 |
-| `hmac-sha512` | HMAC with SHA-512 |
-| `hmac-sha3-256` | HMAC with SHA3-256 |
-| `hmac-blake2b` | HMAC with BLAKE2b |
-
-```python
-from filanti.api import Filanti
-
-# Compute MAC
-key = Filanti.generate_key(32)
-result = Filanti.mac_file("file.txt", key, create_file=True)
-
-# Verify MAC (uses .mac metadata file)
-is_valid = Filanti.verify_mac_file("file.txt", key)
-```
-
-#### Digital Signatures
-
-Asymmetric signature operations for authenticity verification.
-
-| Algorithm | Description |
-|-----------|-------------|
-| `ed25519` | EdDSA with Curve25519 (default) |
-| `ecdsa-p256` | ECDSA with P-256 curve |
-| `ecdsa-p384` | ECDSA with P-384 curve |
-| `ecdsa-p521` | ECDSA with P-521 curve |
-
-```python
-from filanti.api import Filanti
-
-# Generate key pair
-keypair = Filanti.generate_keypair(algorithm="ed25519", password="key-password")
-
-# Sign file (creates .sig file)
-Filanti.sign_file("document.pdf", keypair.private_key, create_file=True)
-
-# Verify signature
-is_valid = Filanti.verify_signature_file("document.pdf")
-```
-
-#### Checksums
-
-Non-cryptographic checksums for detecting accidental corruption.
-
-| Algorithm | Description |
-|-----------|-------------|
-| `crc32` | CRC-32 (default) |
-| `adler32` | Adler-32 |
-| `xxhash64` | XXHash 64-bit (fast) |
-
-⚠️ **Note**: Checksums are NOT cryptographically secure. Use for detecting accidental corruption only.
-
-```python
-from filanti.api import Filanti
-
-# Compute checksum
-result = Filanti.checksum_file("file.txt", algorithm="crc32", create_file=True)
-
-# Verify checksum
-is_valid = Filanti.verify_checksum_file("file.txt")
-```
-
-###  Streaming Encryption
-
-Memory-efficient processing of large files with progress callbacks.
-
-```python
-from filanti.crypto.streaming import encrypt_stream_file, decrypt_stream_file
-
-# Encrypt large file with progress
-def progress(bytes_done, total):
-    print(f"Progress: {bytes_done} bytes")
-
-encrypt_stream_file(
-    "large_file.bin",
-    "large_file.bin.enc",
-    key,
-    chunk_size=64 * 1024,  # 64 KB chunks
-    progress_callback=progress,
-)
-
-# Decrypt with streaming
-decrypt_stream_file("large_file.bin.enc", "large_file.bin", key)
-```
-
-###  Plugin Architecture
-
-Extend Filanti with custom algorithms without modifying core code.
-
-```python
-from filanti.core.plugins import PluginRegistry, HashPlugin
-
-class MyCustomHash(HashPlugin):
-    name = "my-hash"
-    digest_size = 32
-    
-    def hash(self, data: bytes) -> bytes:
-        # Your implementation
-        return custom_hash(data)
-
-# Register plugin
-PluginRegistry.register_hash(MyCustomHash())
-
-# Use it
-from filanti.api import Filanti
-result = Filanti.hash(data, algorithm="my-hash")
-```
-
-**Plugin Types:**
-- `HashPlugin` - Custom hash algorithms
-- `EncryptionPlugin` - Custom encryption algorithms
-- `MACPlugin` - Custom MAC algorithms
-- `SignaturePlugin` - Custom signature algorithms
-- `ChecksumPlugin` - Custom checksum algorithms
-- `KDFPlugin` - Custom key derivation functions
-
-###  Secure Memory Handling
-
-Defense-in-depth memory protection for sensitive data.
-
-```python
-from filanti.core.secure_memory import SecureBytes, SecureString
-
-# Secure bytes handling
-with SecureBytes(sensitive_data) as secure:
-    process(secure.data)
-# Data is automatically cleared
-
-# Secure string handling
-with SecureString("my-password") as pwd:
-    use_password(pwd.value)
-# Password is automatically cleared
-```
-
-###  ENV-Based Secrets
-
-Secure secret injection for automation and CI/CD workflows. Avoid hardcoding passwords in scripts or command lines.
-
-**Supported Patterns:**
-
-| Pattern | Description | Example |
-|---------|-------------|---------|
-| `ENV:VAR` | Unix-style (original) | `ENV:MY_PASSWORD` |
-| `$env:VAR` | PowerShell-style | `$env:MY_PASSWORD` |
-| `${VAR}` | Shell variable expansion | `${MY_PASSWORD}` |
-| `env.VAR` | Dot notation (cross-platform) | `env.MY_PASSWORD` |
-
-```python
-import os
-from filanti.api import Filanti
-
-# Set secret in environment (done by CI/CD, Docker, etc.)
-os.environ["ENCRYPT_PASSWORD"] = "my-secure-password"
-
-# All patterns are supported
-Filanti.encrypt("secret.txt", password="ENV:ENCRYPT_PASSWORD")      # Unix-style
-Filanti.encrypt("secret.txt", password="$env:ENCRYPT_PASSWORD")     # PowerShell
-Filanti.encrypt("secret.txt", password="${ENCRYPT_PASSWORD}")       # Shell-style
-Filanti.encrypt("secret.txt", password="env.ENCRYPT_PASSWORD")      # Dot notation
-
-# Load secrets from .env file
-Filanti.load_dotenv(".env")
-Filanti.encrypt("secret.txt", password="ENV:SECRET_FROM_DOTENV")
-
-# Or load during encryption
-Filanti.encrypt("secret.txt", password="ENV:MY_KEY", dotenv_path=".env")
-
-# Check if value is an ENV reference
-Filanti.is_env_reference("ENV:MY_SECRET")     # True
-Filanti.is_env_reference("$env:MY_SECRET")    # True
-Filanti.is_env_reference("${MY_SECRET}")      # True
-
-# Resolve secret manually
-password = Filanti.resolve_secret("ENV:ENCRYPT_PASSWORD")
-
-# Redact secrets from output (for logging)
-safe_text = Filanti.redact_secret("Password is secret123", "secret123")
-# Returns: "Password is [REDACTED]"
-
-# Create JSON-safe output with redacted secrets
-data = {"password": "secret123", "user": "admin"}
-safe = Filanti.safe_json_output(data, secret_keys=["password"])
-# Returns: {"password": "[REDACTED]", "user": "admin"}
-```
-
-**CLI Support:**
+Filanti launches into an interactive REPL by default:
 
 ```bash
-# Set environment variable
-export ENCRYPT_PASSWORD="my-secure-password"
-
-# All pattern formats work in --password
-filanti encrypt secret.txt --password ENV:ENCRYPT_PASSWORD
-filanti encrypt secret.txt --password '$env:ENCRYPT_PASSWORD'  # PowerShell
-filanti encrypt secret.txt --password '${ENCRYPT_PASSWORD}'    # Shell-style
-filanti encrypt secret.txt --password env.ENCRYPT_PASSWORD     # Dot notation
-
-# PowerShell-friendly --env option (no special characters)
-filanti encrypt secret.txt --env ENCRYPT_PASSWORD
-filanti decrypt secret.txt.enc --env ENCRYPT_PASSWORD
-
-# Load from .env file
-filanti encrypt secret.txt --dotenv .env --env-key MY_PASSWORD
-filanti mac file.txt --dotenv secrets.env --env-key HMAC_KEY
-
-# All secret-accepting commands support these options:
-#   --password   Literal or ENV pattern
-#   --env        Variable name (PowerShell-friendly)
-#   --dotenv     Path to .env file
-#   --env-key    Variable name from .env file
+filanti          # or: python -m filanti
 ```
 
-**Benefits:**
--  Secrets don't appear in command line or process listings
--  Works with CI/CD (GitHub Actions, GitLab CI, Jenkins)
--  Compatible with Docker/Kubernetes secrets
--  12-factor app compliance
--  PowerShell-native syntax support
--  Cross-platform .env file loading
+```
+███████╗██╗██╗      █████╗ ███╗   ██╗████████╗██╗
+██╔════╝██║██║     ██╔══██╗████╗  ██║╚══██╔══╝██║
+█████╗  ██║██║     ███████║██╔██╗ ██║   ██║   ██║
+██╔══╝  ██║██║     ██╔══██║██║╚██╗██║   ██║   ██║
+██║     ██║███████╗██║  ██║██║ ╚████║   ██║   ██║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝
+A secure cryptographic file execution platform  ·  v2
 
-###  Secure File Deletion
+  mode=production  policy=default
+  Type 'help' for commands, 'exit' to quit.
 
-Delete original files securely after encryption/decryption operations.
-
-```python
-from filanti.api import Filanti
-
-# Encrypt and securely delete original
-Filanti.encrypt("secret.txt", password="my-pass", remove_source=True)
-# Original file is securely overwritten before deletion
-
-# Decrypt and remove encrypted file
-Filanti.decrypt("secret.txt.enc", password="my-pass", remove_source=True)
-# Encrypted file is securely deleted after decryption
-
-# Use faster (non-secure) deletion
-Filanti.encrypt("secret.txt", password="my-pass", 
-                remove_source=True, secure_delete=False)
+filanti>
 ```
 
-**CLI Support:**
+### REPL Features
 
-```bash
-# Encrypt and securely delete original
-filanti encrypt secret.txt --password mypass --remove-source
+- **Tab-completion** — commands, subcommands, flags, algorithms, file paths
+- **Persistent history** — `~/.filanti_history` (survives restarts)
+- **Session state** — mode, policy, provider carry across commands
+- **Colored output** — ANSI colors (auto-disabled for non-TTY)
 
-# Decrypt and remove encrypted file
-filanti decrypt secret.txt.enc --password mypass --remove-source
+### REPL Command Reference
 
-# Use faster (non-secure) deletion
-filanti encrypt secret.txt --password mypass --remove-source --no-secure-delete
+**Session:**
+```
+set mode <dev|production|paranoid>
+set policy <default|enterprise|relaxed>
+status                          — show current mode, policy, history count
+modes                           — list available threat modes
+policies                        — list available policies
+history                         — show command history
 ```
 
-> ⚠️ **Note:** Secure deletion provides defense-in-depth but has limitations on SSDs with wear-leveling, journaling filesystems, and cloud-synced folders. For maximum security, use full-disk encryption.
-
-###  Asymmetric / Hybrid Encryption
-
-Public-key based encryption for secure file exchange between parties who don't share a secret key.
-
-**How it works:**
-1. Sender encrypts file with recipient's **public key**
-2. A random session key is generated and encrypted for each recipient
-3. Data is encrypted with fast symmetric AEAD (AES-256-GCM)
-4. Recipient decrypts with their **private key**
-
-| Algorithm | Description | Key Type |
-|-----------|-------------|----------|
-| `x25519` | Modern elliptic curve Diffie-Hellman (default) | 256-bit |
-| `rsa-oaep` | RSA with OAEP padding | 2048/3072/4096-bit |
-
-**Key Generation:**
-
-```python
-from filanti.api import Filanti
-
-# Generate X25519 key pair (recommended)
-keypair = Filanti.generate_asymmetric_keypair()
-Filanti.save_asymmetric_keypair(keypair, "alice.pem")
-# Creates: alice.pem (private) and alice.pub (public)
-
-# Generate RSA key pair
-keypair = Filanti.generate_asymmetric_keypair(
-    algorithm="rsa-oaep",
-    rsa_key_size=4096
-)
-
-# Generate with password protection
-keypair = Filanti.generate_asymmetric_keypair(password="my-password")
+**Encryption:**
+```
+encrypt <file> --password <PW> [--output OUT] [--algorithm ALG]
+        [--remove-source] [--no-secure-delete]
+decrypt <file> --password <PW> [--output OUT]
+        [--remove-source] [--no-secure-delete]
 ```
 
-**Encryption & Decryption:**
-
-```python
-from filanti.api import Filanti
-
-# Encrypt file for a recipient
-Filanti.hybrid_encrypt("secret.txt", ["recipient.pub"])
-# Creates: secret.txt.henc
-
-# Encrypt for multiple recipients
-Filanti.hybrid_encrypt(
-    "secret.txt",
-    ["alice.pub", "bob.pub", "charlie.pub"],
-    recipient_ids=["alice", "bob", "charlie"]
-)
-
-# Decrypt with private key
-Filanti.hybrid_decrypt("secret.txt.henc", "my-key.pem")
-
-# Decrypt with password-protected key
-Filanti.hybrid_decrypt(
-    "secret.txt.henc",
-    "my-key.pem",
-    password="key-password"
-)
-
-# Get file metadata
-info = Filanti.get_hybrid_file_info("secret.txt.henc")
-print(f"Recipients: {info.recipient_count}")
-print(f"Algorithm: {info.asymmetric_algorithm}")
+**Hashing:**
+```
+hash <file> [algorithm]
+verify-hash <file> <expected_hash> [algorithm]
 ```
 
-**Bytes Encryption:**
-
-```python
-from filanti.api import Filanti
-
-# Encrypt bytes for recipients
-encrypted = Filanti.hybrid_encrypt_bytes(
-    b"secret data",
-    ["recipient.pub"]
-)
-
-# Decrypt bytes
-decrypted = Filanti.hybrid_decrypt_bytes(encrypted, "my-key.pem")
+**Signatures:**
+```
+keygen <output> [--algorithm ALG] [--password PW]
+sign <file> --key-ref <private_key>
+verify <file> --sig <hex> --key-ref <public_key>
 ```
 
-**CLI Usage:**
-
-```bash
-# Generate X25519 key pair
-filanti keygen-asymmetric mykey
-
-# Generate RSA key pair
-filanti keygen-asymmetric mykey --algorithm rsa-oaep --rsa-size 4096
-
-# Generate with password protection
-filanti keygen-asymmetric mykey --protect
-
-# Encrypt file for recipient
-filanti encrypt-pubkey secret.txt --pubkey recipient.pub
-
-# Encrypt for multiple recipients
-filanti encrypt-pubkey secret.txt --pubkey alice.pub --pubkey bob.pub
-
-# Decrypt with private key
-filanti decrypt-privkey secret.txt.henc --privkey mykey.pem
-
-# Decrypt with password-protected key
-filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password "key-pass"
-
-# Show hybrid file info
-filanti info-hybrid secret.txt.henc
+**Integrity:**
+```
+mac <file> --password <hex_key> [--algorithm ALG]
+verify-mac <file> --password <hex_key> --mac <hex>
+checksum <file> [algorithm]
+verify-checksum <file> <expected> [algorithm]
 ```
 
-**Use Cases:**
--  **Secure file sharing** - Send encrypted files without exchanging passwords
--  **Team collaboration** - Encrypt for multiple team members at once
--  **End-to-end encryption** - Each recipient uses their own private key
--  **Key escrow** - Include backup recipient for recovery
+**Hybrid / Asymmetric:**
+```
+keygen-asymmetric <output> [--algorithm ALG] [--password PW]
+encrypt-pubkey <file> --pubkey <key.pub> [--pubkey <key2.pub>]
+decrypt-privkey <file.henc> --key-ref <key.pem> [--password PW]
+info-hybrid <file.henc>
+```
+
+**KMS (Key Management System):**
+```
+kms status                           — show provider info
+kms create-key <key_id>              — create master key
+kms list                             — list master keys
+kms encrypt <file> <key_id>          — encrypt with envelope encryption
+kms decrypt <file> <key_id> <wrapped_hex>  — decrypt with wrapped key
+```
+
+**Utility:**
+```
+algorithms     — list all supported algorithms
+version        — show Filanti version
+clear          — clear the terminal
+help [command] — show help
+exit / quit    — exit the REPL
+```
 
 ---
 
@@ -568,17 +291,23 @@ filanti info-hybrid secret.txt.henc
 
 All CLI commands output JSON for automation and scripting.
 
-### General Commands
+### Encryption
 
 ```bash
-# Show version
-filanti version
+# Encrypt with password (Argon2id KDF + AES-256-GCM)
+filanti encrypt secret.txt --password "my-password"
+filanti encrypt secret.txt -p "password" --algorithm chacha20-poly1305
 
-# List all supported algorithms
-filanti list-algorithms
+# Encrypt with ENV-based secret (recommended for automation)
+export ENCRYPT_PASSWORD="my-secure-password"
+filanti encrypt secret.txt --password ENV:ENCRYPT_PASSWORD
 
-# Show supported hash algorithms
-filanti algorithms
+# Encrypt and securely delete original
+filanti encrypt secret.txt -p "password" --remove-source
+
+# Decrypt
+filanti decrypt secret.txt.enc --password "my-password"
+filanti decrypt secret.txt.enc -p "password" -o original.txt
 ```
 
 ### Hashing
@@ -586,379 +315,383 @@ filanti algorithms
 ```bash
 # Hash a file (SHA-256 default)
 filanti hash document.pdf
-
-# Hash with specific algorithm
-filanti hash document.pdf --algorithm sha512
-filanti hash document.pdf -a blake2b
+filanti hash document.pdf --algorithm sha3-256
 
 # Verify file hash
 filanti verify document.pdf abc123...
 filanti verify document.pdf abc123... --algorithm sha512
 ```
 
-### Encryption
+### Digital Signatures
 
 ```bash
-# Encrypt with password (will prompt)
-filanti encrypt secret.txt
+# Generate signing key pair (Ed25519 default)
+filanti keygen mykey
+filanti keygen mykey --algorithm ecdsa-p384
+filanti keygen mykey --protect  # password-protected
 
-# Encrypt with password argument
-filanti encrypt secret.txt --password "my-password"
+# Sign
+filanti sign document.pdf --key mykey
 
-# Encrypt with ENV-based secret (recommended for automation)
-export ENCRYPT_PASSWORD="my-secure-password"
-filanti encrypt secret.txt --password ENV:ENCRYPT_PASSWORD
-
-# Encrypt with specific algorithm
-filanti encrypt secret.txt -p "password" --algorithm chacha20-poly1305
-
-# Specify output path
-filanti encrypt secret.txt -o encrypted_file.bin -p "password"
-
-# Decrypt
-filanti decrypt secret.txt.enc --password "my-password"
-
-# Decrypt with ENV-based secret
-filanti decrypt secret.txt.enc --password ENV:ENCRYPT_PASSWORD
-
-filanti decrypt secret.txt.enc -o original.txt -p "password"
+# Verify
+filanti verify-sig document.pdf
+filanti verify-sig document.pdf --key mykey.pub
 ```
 
 ### MAC (Integrity)
 
 ```bash
-# Generate MAC with key
+# Generate HMAC
 filanti mac file.txt --key "my-secret-key"
-
-# Generate MAC with ENV-based secret (recommended)
-export HMAC_KEY="my-hmac-secret-key"
-filanti mac file.txt --key ENV:HMAC_KEY
-
-# Generate MAC with hex key
-filanti mac file.txt --key abc123def456...
-
-# Create detached .mac file
 filanti mac file.txt --key ENV:HMAC_KEY --create-file
 
-# Verify MAC
+# Verify
 filanti verify-mac file.txt --key ENV:HMAC_KEY
-filanti verify-mac file.txt --key ENV:HMAC_KEY --mac-file file.txt.mac
-```
-
-### Digital Signatures
-
-```bash
-# Generate key pair
-filanti keygen my_signing_key
-
-# Generate protected key pair (encrypted private key)
-filanti keygen my_signing_key --protect
-# (prompts for password)
-
-# Generate with ENV-based password
-filanti keygen my_signing_key --password ENV:KEY_PASSWORD
-
-# Generate with specific algorithm
-filanti keygen my_key --algorithm ecdsa-p384
-
-# Sign a file
-filanti sign document.pdf --key my_signing_key
-
-# Sign with password-protected key
-filanti sign document.pdf --key my_signing_key --password "key-password"
-
-# Sign with ENV-based password (recommended for automation)
-filanti sign document.pdf --key my_signing_key --password ENV:KEY_PASSWORD
-
-# Sign without embedding public key
-filanti sign document.pdf --key my_signing_key --no-embed-key
-
-# Verify signature (uses embedded public key)
-filanti verify-sig document.pdf
-
-# Verify with external public key
-filanti verify-sig document.pdf --key my_signing_key.pub
 ```
 
 ### Checksums
 
 ```bash
-# Compute checksum (CRC-32 default)
 filanti checksum file.txt
-
-# Compute with specific algorithm
 filanti checksum file.txt --algorithm xxhash64
-
-# Create detached .checksum file
-filanti checksum file.txt --create-file
-
-# Verify checksum
 filanti verify-checksum file.txt --expected "0x1a2b3c4d"
-filanti verify-checksum file.txt --checksum-file file.txt.checksum
 ```
 
 ### Asymmetric / Hybrid Encryption
 
 ```bash
-# Generate X25519 key pair (default)
-filanti keygen-asymmetric mykey
+# Generate key pair
+filanti keygen-asymmetric mykey                          # X25519 (default)
+filanti keygen-asymmetric mykey --algorithm rsa-oaep     # RSA
+filanti keygen-asymmetric mykey --protect                # password-protected
 
-# Generate with password protection
-filanti keygen-asymmetric mykey --protect
-
-# Generate RSA key pair
-filanti keygen-asymmetric mykey --algorithm rsa-oaep --rsa-size 4096
-
-# Generate with ENV-based password
-filanti keygen-asymmetric mykey --password ENV:KEY_PASSWORD
-
-# Encrypt file for recipient
-filanti encrypt-pubkey secret.txt --pubkey recipient.pub
-
-# Encrypt with specific algorithm
-filanti encrypt-pubkey secret.txt --pubkey recipient.pub --algorithm rsa-oaep
-
-# Encrypt for multiple recipients
+# Encrypt for recipient(s)
+filanti encrypt-pubkey secret.txt --pubkey alice.pub
 filanti encrypt-pubkey secret.txt --pubkey alice.pub --pubkey bob.pub
 
-# Encrypt with recipient IDs
-filanti encrypt-pubkey secret.txt --pubkey alice.pub -r alice --pubkey bob.pub -r bob
-
-# Specify output path
-filanti encrypt-pubkey secret.txt --pubkey recipient.pub -o encrypted_file.henc
-
-# Decrypt with private key
+# Decrypt
 filanti decrypt-privkey secret.txt.henc --privkey mykey.pem
 
-# Decrypt with password-protected key
-filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password "key-pass"
-
-# Decrypt with ENV-based password
-filanti decrypt-privkey secret.txt.henc --privkey mykey.pem --password ENV:KEY_PASSWORD
-
-# Show hybrid encrypted file metadata
+# Inspect
 filanti info-hybrid secret.txt.henc
 ```
 
----
+### Utility
 
-## Python SDK
-
-### Filanti Class
-
-The `Filanti` class provides a unified high-level API for all operations.
-
-```python
-from filanti.api import Filanti
+```bash
+filanti version
+filanti list-algorithms
 ```
 
-#### Hashing Methods
+### ENV-Based Secrets
+
+All password-accepting commands support multiple ENV patterns:
+
+| Pattern | Example |
+|---|---|
+| `ENV:VAR` | `--password ENV:MY_PASSWORD` |
+| `$env:VAR` | `--password '$env:MY_PASSWORD'` |
+| `${VAR}` | `--password '${MY_PASSWORD}'` |
+| `env.VAR` | `--password env.MY_PASSWORD` |
+
+```bash
+# PowerShell-friendly --env option
+filanti encrypt secret.txt --env ENCRYPT_PASSWORD
+
+# Load from .env file
+filanti encrypt secret.txt --dotenv .env --env-key MY_PASSWORD
+```
+
+---
+
+## Python SDK (v2)
+
+The v2 SDK routes all operations through the Orchestrator pipeline with threat-mode and policy enforcement.
+
+```python
+from filanti.api.sdk_v2 import Filanti
+```
+
+### Encryption
 
 | Method | Description |
-|--------|-------------|
-| `Filanti.hash(data, algorithm)` | Hash bytes data |
+|---|---|
+| `Filanti.encrypt(path, *, password/key/key_ref, output, algorithm, policy, threat_mode)` | Encrypt file |
+| `Filanti.decrypt(path, *, password/key/key_ref, output)` | Decrypt file |
+| `Filanti.encrypt_bytes(data, *, password/key, algorithm)` | Encrypt bytes |
+| `Filanti.decrypt_bytes(data, *, key)` | Decrypt bytes |
+
+### Hashing
+
+| Method | Description |
+|---|---|
 | `Filanti.hash_file(path, algorithm)` | Hash a file |
-| `Filanti.verify_hash(data, expected, algorithm)` | Verify hash of bytes |
-| `Filanti.verify_file_hash(path, expected, algorithm)` | Verify hash of file |
+| `Filanti.hash_bytes(data, algorithm)` | Hash bytes |
+| `Filanti.verify_hash(path, expected, algorithm)` | Verify file hash → bool |
 
-#### Encryption Methods
-
-| Method | Description |
-|--------|-------------|
-| `Filanti.encrypt(path, password/key, output, algorithm)` | Encrypt a file |
-| `Filanti.decrypt(path, password/key, output)` | Decrypt a file |
-| `Filanti.encrypt_bytes(data, password/key, algorithm)` | Encrypt bytes |
-| `Filanti.decrypt_bytes(data, password/key)` | Decrypt bytes |
-
-#### Asymmetric / Hybrid Encryption Methods
+### Signatures
 
 | Method | Description |
-|--------|-------------|
-| `Filanti.generate_asymmetric_keypair(algorithm, password, rsa_key_size)` | Generate asymmetric key pair |
-| `Filanti.save_asymmetric_keypair(keypair, private_path, public_path)` | Save key pair to files |
-| `Filanti.hybrid_encrypt(path, public_keys, output, algorithm)` | Encrypt file for recipients |
-| `Filanti.hybrid_decrypt(path, private_key, output, password)` | Decrypt hybrid encrypted file |
-| `Filanti.hybrid_encrypt_bytes(data, public_keys, algorithm)` | Encrypt bytes for recipients |
-| `Filanti.hybrid_decrypt_bytes(data, private_key, password)` | Decrypt hybrid encrypted bytes |
-| `Filanti.get_hybrid_file_info(path)` | Get hybrid file metadata |
+|---|---|
+| `Filanti.sign(path, *, private_key)` | Sign file |
+| `Filanti.sign_bytes(data, *, private_key)` | Sign bytes |
+| `Filanti.verify(path, *, signature, public_key)` | Verify file sig → VerifyResult |
+| `Filanti.verify_bytes(data, *, signature, public_key)` | Verify bytes sig → VerifyResult |
+| `Filanti.generate_keypair(algorithm, password)` | Generate signing key pair * |
+| `Filanti.save_keypair(keypair, output_path)` | Save key pair to files * |
 
-#### Integrity Methods
-
-| Method | Description |
-|--------|-------------|
-| `Filanti.mac(data, key, algorithm)` | Compute MAC of bytes |
-| `Filanti.mac_file(path, key, algorithm, create_file)` | Compute MAC of file |
-| `Filanti.verify_mac(data, mac_value, key, algorithm)` | Verify MAC of bytes |
-| `Filanti.verify_mac_file(path, key, mac_value/mac_file)` | Verify MAC of file |
-
-#### Signature Methods
+### Integrity
 
 | Method | Description |
-|--------|-------------|
-| `Filanti.generate_keypair(algorithm, password)` | Generate key pair |
-| `Filanti.sign(data, private_key, algorithm, password)` | Sign bytes |
-| `Filanti.sign_file(path, private_key, algorithm, password, create_file)` | Sign file |
-| `Filanti.verify_signature(data, signature, public_key, algorithm)` | Verify signature of bytes |
-| `Filanti.verify_signature_file(path, signature_file, public_key)` | Verify signature of file |
+|---|---|
+| `Filanti.mac(path, *, key, algorithm)` | Compute file MAC |
+| `Filanti.mac_bytes(data, *, key, algorithm)` | Compute bytes MAC |
+| `Filanti.verify_mac_value(path, *, key, expected_mac, algorithm)` | Verify MAC → bool |
+| `Filanti.checksum(path, algorithm)` | Compute file checksum |
+| `Filanti.checksum_bytes(data, algorithm)` | Compute bytes checksum |
+| `Filanti.verify_checksum_value(path, expected, algorithm)` | Verify checksum → bool |
 
-#### Checksum Methods
-
-| Method | Description |
-|--------|-------------|
-| `Filanti.checksum(data, algorithm)` | Compute checksum of bytes |
-| `Filanti.checksum_file(path, algorithm, create_file)` | Compute checksum of file |
-| `Filanti.verify_checksum(data, expected, algorithm)` | Verify checksum of bytes |
-| `Filanti.verify_checksum_file(path, expected/checksum_file, algorithm)` | Verify checksum of file |
-
-#### Utility Methods
+### Hybrid / Asymmetric
 
 | Method | Description |
-|--------|-------------|
-| `Filanti.generate_key(size)` | Generate random key |
-| `Filanti.derive_key(password, salt, algorithm)` | Derive key from password |
-| `Filanti.algorithms()` | Get all supported algorithms |
+|---|---|
+| `Filanti.generate_asymmetric_keypair(algorithm, password, rsa_key_size)` | Generate key pair * |
+| `Filanti.save_asymmetric_keypair(keypair, output_path)` | Save key pair * |
+| `Filanti.hybrid_encrypt(path, public_keys, *, output, algorithm)` | Hybrid encrypt file * |
+| `Filanti.hybrid_decrypt(path, private_key, *, output, password)` | Hybrid decrypt file * |
+| `Filanti.hybrid_encrypt_bytes(data, public_keys)` | Hybrid encrypt bytes * |
+| `Filanti.hybrid_decrypt_bytes(data, private_key)` | Hybrid decrypt bytes * |
+| `Filanti.get_hybrid_file_info(path)` | Read .henc metadata * |
 
-#### Secrets Methods
+### Utility
 
 | Method | Description |
-|--------|-------------|
-| `Filanti.resolve_secret(value, allow_empty)` | Resolve ENV:VAR_NAME to value |
-| `Filanti.is_env_reference(value)` | Check if value is ENV reference |
-| `Filanti.redact_secret(text, secret)` | Redact secret from text |
-| `Filanti.redact_secrets(text, secrets)` | Redact multiple secrets |
-| `Filanti.safe_json_output(data, secrets, secret_keys)` | Create JSON with redacted secrets |
+|---|---|
+| `Filanti.generate_key(size)` | Generate random key * |
+| `Filanti.derive(password, *, algorithm, ...)` | Derive key via KDF |
+| `Filanti.algorithms()` | List all supported algorithms |
+| `Filanti.resolve_secret(value)` | Resolve ENV reference |
+| `Filanti.is_env_reference(value)` | Check if ENV reference |
+| `Filanti.load_dotenv(path)` | Load .env file |
+| `Filanti.execute(operation, **kwargs)` | Generic orchestrator call |
+| `Filanti.configure(key_manager)` | Configure orchestrator |
+
+> \* Marked methods bypass the Orchestrator (`@unsafe`) and emit a `UserWarning`.
 
 ### Direct Module Access
 
-For more control, use the underlying modules directly:
+For maximum control, import directly from submodules:
 
 ```python
 # Hashing
-from filanti.hashing import crypto_hash
-digest = crypto_hash.hash_file("file.txt", "sha256")
+from filanti.hashing.crypto_hash import hash_file
 
 # Encryption
-from filanti.crypto import encrypt_file, decrypt_file
-encrypt_file(input_path, output_path, key)
+from filanti.crypto import encrypt_file_with_password, decrypt_file_with_password
 
-# Asymmetric/Hybrid Encryption
-from filanti.crypto.asymmetric import (
-    generate_asymmetric_keypair,
-    hybrid_encrypt_file,
-    hybrid_decrypt_file,
-)
-keypair = generate_asymmetric_keypair("x25519")
-hybrid_encrypt_file(input_path, output_path, [keypair.public_key])
+# Asymmetric / Hybrid
+from filanti.crypto.asymmetric import generate_asymmetric_keypair, hybrid_encrypt_file
+
+# Streaming (large files)
+from filanti.crypto.streaming import encrypt_stream_file, decrypt_stream_file
 
 # Integrity
-from filanti.integrity import compute_file_mac, verify_file_mac
-mac = compute_file_mac("file.txt", key)
+from filanti.integrity.mac import compute_file_mac
+from filanti.integrity.signature import generate_keypair, sign_file
+from filanti.integrity.checksum import compute_file_checksum
 
-# Signatures
-from filanti.integrity import generate_keypair, sign_file
-keypair = generate_keypair("ed25519")
-sign_file("file.txt", keypair.private_key)
-
-# Streaming
-from filanti.crypto.streaming import encrypt_stream_file
-encrypt_stream_file(input_path, output_path, key)
-
-# Secure Memory
-from filanti.core.secure_memory import SecureBytes, secure_random_bytes
-random = secure_random_bytes(32)
+# Secure memory
+from filanti.core.secure_memory import SecureBytes, SecureString
 
 # Secrets
-from filanti.core.secrets import resolve_secret, redact_secret
-password = resolve_secret("ENV:MY_PASSWORD")
-safe_output = redact_secret("Password is secret123", "secret123")
+from filanti.core.secrets import resolve_secret, load_dotenv
 ```
 
 ---
 
-[//]: # (## Architecture)
+## Python SDK (v1 — backward compatible)
 
-[//]: # ()
-[//]: # (```)
+The original v1 SDK continues to work unchanged:
 
-[//]: # (filanti/)
+```python
+from filanti.api import Filanti
 
-[//]: # (├── core/              )
+Filanti.encrypt("secret.txt", password="my-password")
+Filanti.decrypt("secret.txt.enc", password="my-password")
+Filanti.hash_file("document.pdf")
+keypair = Filanti.generate_keypair()
+Filanti.hybrid_encrypt("secret.txt", ["alice.pub"])
+```
 
-[//]: # (│   ├── errors.py      )
+All v1 method signatures are preserved. See the [v1 SDK reference tables](#v1-sdk-reference) for the full API.
 
-[//]: # (│   ├── file_manager.py )
+<details>
+<summary><strong>v1 SDK Reference (click to expand)</strong></summary>
 
-[//]: # (│   ├── metadata.py    )
+### Hashing
 
-[//]: # (│   ├── plugins.py     )
+| Method | Description |
+|---|---|
+| `Filanti.hash(data, algorithm)` | Hash bytes |
+| `Filanti.hash_file(path, algorithm)` | Hash file |
+| `Filanti.verify_hash(data, expected, algorithm)` | Verify hash |
+| `Filanti.verify_file_hash(path, expected, algorithm)` | Verify file hash |
 
-[//]: # (│   ├── secrets.py     )
+### Encryption
 
-[//]: # (│   └── secure_memory.py )
+| Method | Description |
+|---|---|
+| `Filanti.encrypt(path, password/key, output, algorithm)` | Encrypt file |
+| `Filanti.decrypt(path, password/key, output)` | Decrypt file |
+| `Filanti.encrypt_bytes(data, password/key, algorithm)` | Encrypt bytes |
+| `Filanti.decrypt_bytes(data, password/key)` | Decrypt bytes |
 
-[//]: # (│)
+### Signatures
 
-[//]: # (├── crypto/            )
+| Method | Description |
+|---|---|
+| `Filanti.generate_keypair(algorithm, password)` | Generate signing key pair |
+| `Filanti.sign(data, private_key)` | Sign bytes |
+| `Filanti.sign_file(path, private_key, ...)` | Sign file |
+| `Filanti.verify_signature(data, signature, public_key)` | Verify bytes signature |
+| `Filanti.verify_signature_file(path, signature_file, public_key)` | Verify file signature |
 
-[//]: # (│   ├── encryption.py  )
+### Asymmetric / Hybrid
 
-[//]: # (│   ├── decryption.py  )
+| Method | Description |
+|---|---|
+| `Filanti.generate_asymmetric_keypair(algorithm, password, rsa_key_size)` | Generate key pair |
+| `Filanti.save_asymmetric_keypair(keypair, private_path, public_path)` | Save key pair |
+| `Filanti.hybrid_encrypt(path, public_keys, output, algorithm)` | Hybrid encrypt file |
+| `Filanti.hybrid_decrypt(path, private_key, output, password)` | Hybrid decrypt file |
+| `Filanti.hybrid_encrypt_bytes(data, public_keys, algorithm)` | Hybrid encrypt bytes |
+| `Filanti.hybrid_decrypt_bytes(data, private_key, password)` | Hybrid decrypt bytes |
+| `Filanti.get_hybrid_file_info(path)` | Read .henc metadata |
 
-[//]: # (│   ├── key_management.py )
+### Integrity
 
-[//]: # (│   ├── kdf.py         )
+| Method | Description |
+|---|---|
+| `Filanti.mac(data, key, algorithm)` | MAC bytes |
+| `Filanti.mac_file(path, key, algorithm, create_file)` | MAC file |
+| `Filanti.verify_mac(data, mac_value, key, algorithm)` | Verify MAC bytes |
+| `Filanti.verify_mac_file(path, key, mac_value/mac_file)` | Verify MAC file |
+| `Filanti.checksum(data, algorithm)` | Checksum bytes |
+| `Filanti.checksum_file(path, algorithm, create_file)` | Checksum file |
+| `Filanti.verify_checksum(data, expected, algorithm)` | Verify checksum bytes |
+| `Filanti.verify_checksum_file(path, expected/checksum_file, algorithm)` | Verify checksum file |
 
-[//]: # (│   ├── streaming.py   )
+### Utility
 
-[//]: # (│   └── asymmetric.py  )
+| Method | Description |
+|---|---|
+| `Filanti.generate_key(size)` | Random key |
+| `Filanti.derive_key(password, salt, algorithm)` | KDF |
+| `Filanti.algorithms()` | All algorithms |
+| `Filanti.resolve_secret(value)` | Resolve ENV reference |
+| `Filanti.is_env_reference(value)` | Check ENV pattern |
+| `Filanti.redact_secret(text, secret)` | Redact from string |
+| `Filanti.safe_json_output(data, secrets, secret_keys)` | Safe JSON |
 
-[//]: # (│)
+</details>
 
-[//]: # (├── hashing/           )
+---
 
-[//]: # (│   └── crypto_hash.py )
-
-[//]: # (│)
-
-[//]: # (├── integrity/        )
-
-[//]: # (│   ├── checksum.py    )
-
-[//]: # (│   ├── mac.py         )
-
-[//]: # (│   └── signature.py   )
-
-[//]: # (│)
-
-[//]: # (├── cli/               )
-
-[//]: # (│   └── main.py        )
-
-[//]: # (│)
-
-[//]: # (└── api/               )
-
-[//]: # (    └── sdk.py         )
-
-[//]: # (```)
-
-### Module Dependencies
+## Architecture
 
 ```
-api/sdk.py
-    ├── hashing/crypto_hash.py
-    ├── crypto/encryption.py
-    ├── crypto/decryption.py
-    ├── crypto/asymmetric.py
-    ├── crypto/kdf.py
-    ├── crypto/key_management.py
-    ├── integrity/mac.py
-    ├── integrity/signature.py
-    ├── integrity/checksum.py
-    └── core/errors.py
+filanti/
+├── api/
+│   ├── sdk.py              # v1 SDK (backward compatible)
+│   └── sdk_v2.py           # v2 SDK (orchestrator-backed)
+├── cli/
+│   ├── main.py             # Typer CLI (19 commands)
+│   └── repl.py             # Interactive REPL with tab-completion
+├── core/
+│   ├── context.py          # ExecutionContext + Operation enum
+│   ├── orchestrator.py     # Pipeline: Threat → Policy → KMS → Engine
+│   ├── errors.py           # Exception hierarchy
+│   ├── file_manager.py     # File I/O + secure deletion
+│   ├── metadata.py         # File format metadata
+│   ├── plugins.py          # Plugin registry
+│   ├── secrets.py          # ENV secret resolution
+│   └── secure_memory.py    # SecureBytes / SecureString
+├── crypto/
+│   ├── encryption.py       # AES-256-GCM, ChaCha20-Poly1305
+│   ├── decryption.py       # Symmetric decryption
+│   ├── asymmetric.py       # X25519, RSA-OAEP hybrid encryption
+│   ├── kdf.py              # Argon2id, Scrypt
+│   ├── key_management.py   # Key generation, splitting, derivation
+│   └── streaming.py        # Chunked processing for large files
+├── engines/
+│   ├── crypto.py           # CryptoEngine (encrypt/decrypt dispatch)
+│   ├── hashing.py          # HashingEngine
+│   ├── integrity.py        # IntegrityEngine (sign/verify/mac/checksum)
+│   ├── kdf.py              # KDFEngine
+│   └── router.py           # EngineRouter (operation → engine)
+├── hashing/
+│   └── crypto_hash.py      # SHA-2, SHA-3, BLAKE2b
+├── integrity/
+│   ├── mac.py              # HMAC algorithms
+│   ├── signature.py        # Ed25519, ECDSA
+│   └── checksum.py         # CRC32, Adler32, XXHash64
+├── kms/
+│   └── manager.py          # KeyManager + LocalProvider (~/.filanti/keys/)
+├── policy/
+│   └── engine.py           # Policy enforcement (default/enterprise/relaxed)
+└── threat/
+    └── engine.py           # Threat modes (dev/production/paranoid)
+```
 
-cli/main.py
-    └── (same dependencies as sdk.py)
+### Orchestrator Pipeline
+
+```python
+from filanti.core.orchestrator import Orchestrator
+
+orch = Orchestrator()
+
+# Every operation follows the same pipeline:
+result = orch.execute("encrypt", {
+    "input_path": "secret.txt",
+    "password": "my-password",
+    "policy_name": "enterprise",
+    "threat_mode": "paranoid",
+})
+```
+
+1. **ThreatEngine** — applies mode-specific defaults (KDF cost, algorithm selection)
+2. **PolicyEngine** — validates inputs (password strength, algorithm restrictions)
+3. **KMS** — resolves key references, applies envelope encryption
+4. **EngineRouter** — dispatches to CryptoEngine, HashingEngine, IntegrityEngine, or KDFEngine
+
+---
+
+## KMS (Key Management System)
+
+Filanti includes a built-in local KMS for envelope encryption.
+
+```
+┌──────────────┐        ┌───────────────┐
+│  Master Key   │──wraps─▶│  Data Key     │──encrypts─▶  Ciphertext
+│ (~/.filanti/) │        │ (per-file)    │
+└──────────────┘        └───────────────┘
+```
+
+**REPL:**
+```
+kms create-key myapp
+kms encrypt secret.txt myapp
+kms decrypt secret.txt.enc myapp <wrapped_key_hex>
+```
+
+**Python:**
+```python
+from filanti.kms.manager import KeyManager, LocalProvider
+
+km = KeyManager(LocalProvider())
+dk = km.generate_data_key("myapp")
+# dk.plaintext → use to encrypt
+# dk.wrapped   → store alongside ciphertext
 ```
 
 ---
@@ -968,53 +701,38 @@ cli/main.py
 ### Threat Assumptions
 
 Filanti is designed assuming:
+- **Host compromise is possible** — keys should be protected
+- **Files may be intercepted** — all encryption is authenticated (AEAD)
+- **Password reuse may occur** — unique salt + strong KDF (Argon2id)
+- **Timing attacks are a concern** — constant-time comparisons everywhere
 
-- **Host compromise is possible** - Keys should be protected
-- **Files may be intercepted** - All encryption is authenticated
-- **Password reuse may occur** - Strong KDF with unique salts
-- **Timing attacks are a concern** - Constant-time comparisons
-
-### Security Mitigations
+### Mitigations
 
 | Threat | Mitigation |
-|--------|------------|
+|---|---|
 | Eavesdropping | Authenticated encryption (AES-GCM, ChaCha20-Poly1305) |
 | Tampering | Authentication tags, HMAC, digital signatures |
 | Replay attacks | Unique nonces per encryption |
 | Password cracking | Argon2id with high memory cost |
-| Timing attacks | Constant-time comparison (secrets.compare_digest) |
-| Memory leaks | Secure memory zeroing |
-| Algorithm confusion | Explicit algorithm selection |
+| Timing attacks | `secrets.compare_digest` for all comparisons |
+| Memory leaks | `SecureBytes` / `SecureString` with auto-zeroing |
+| Algorithm confusion | Explicit algorithm selection, policy enforcement |
+| Key leakage | KMS envelope encryption, secure deletion |
 
 ### Best Practices
 
-1. **Use password-based encryption for user-facing features**
-   - Argon2id provides excellent protection against GPU/ASIC attacks
-
-2. **Use raw keys for server-to-server encryption**
-   - Generate keys with `Filanti.generate_key(32)`
-   - Store keys securely (HSM, vault, secure key management)
-
-3. **Use hybrid encryption for secure file sharing**
-   - X25519 recommended for performance and security
-   - Protect private keys with passwords
-   - Multi-recipient encryption for team collaboration
-
-4. **Always verify signatures with trusted public keys**
-   - Don't rely solely on embedded public keys
-
-5. **Use HMAC for integrity when confidentiality isn't needed**
-   - Faster than signatures
-   - Requires shared secret key
-
-6. **Use checksums only for accidental corruption**
-   - Not secure against malicious modification
+1. **Password-based encryption** for user-facing features (Argon2id)
+2. **Raw keys** for server-to-server (`Filanti.generate_key(32)`)
+3. **Hybrid encryption** for secure file sharing (X25519)
+4. **HMAC** for integrity when confidentiality isn't needed
+5. **Signatures** for non-repudiation
+6. **Checksums** only for accidental corruption detection
 
 ---
 
-## Metadata Formats
+## File Formats
 
-### Encrypted File Format
+### Encrypted File (.enc)
 
 ```
 FLNT           # Magic bytes (4 bytes)
@@ -1024,400 +742,151 @@ METADATA_JSON  # Algorithm, nonce, salt, KDF params
 CIPHERTEXT     # Encrypted data with auth tag
 ```
 
-### Hybrid Encrypted File Format (.henc)
+### Hybrid Encrypted File (.henc)
 
 ```
-FLAS           # Magic bytes (4 bytes) - "Filanti Asymmetric"
+FLAS           # Magic bytes (4 bytes) — "Filanti Asymmetric"
 METADATA_LEN   # Metadata length (4 bytes)
-METADATA_JSON  # Includes:
-               #   - symmetric_algorithm
-               #   - nonce
-               #   - created_at
-               #   - session_keys[] (one per recipient)
-               #     - encrypted_key
-               #     - ephemeral_public_key (X25519)
-               #     - algorithm
-               #     - recipient_id (optional)
+METADATA_JSON  # asymmetric_algorithm, nonce, session_keys[], ...
 CIPHERTEXT     # Encrypted data with auth tag
-```
-
-### Detached Metadata Files
-
-#### .mac File
-
-```json
-{
-  "version": "1.0",
-  "algorithm": "hmac-sha256",
-  "mac": "a1b2c3...",
-  "filename": "document.pdf",
-  "filesize": 12345,
-  "created_at": "2026-01-16T12:00:00Z"
-}
-```
-
-#### .sig File
-
-```json
-{
-  "version": "1.0",
-  "algorithm": "ed25519",
-  "signature": "d4e5f6...",
-  "public_key": "-----BEGIN PUBLIC KEY-----...",
-  "filename": "document.pdf",
-  "filesize": 12345,
-  "created_at": "2026-01-16T12:00:00Z"
-}
-```
-
-#### .checksum File
-
-```json
-{
-  "version": "1.0",
-  "algorithm": "crc32",
-  "checksum": "0x1a2b3c4d",
-  "filename": "document.pdf",
-  "filesize": 12345,
-  "created_at": "2026-01-16T12:00:00Z"
-}
 ```
 
 ---
 
-[//]: # (## Testing)
-
-[//]: # ()
-[//]: # (### Running Tests)
-
-[//]: # ()
-[//]: # (```bash)
-
-[//]: # (# Run all tests)
-
-[//]: # (pytest)
-
-[//]: # ()
-[//]: # (# Run with coverage)
-
-[//]: # (pytest --cov=filanti)
-
-[//]: # ()
-[//]: # (# Run specific test file)
-
-[//]: # (pytest tests/test_encryption.py)
-
-[//]: # ()
-[//]: # (# Run with verbose output)
-
-[//]: # (pytest -v)
-
-[//]: # (```)
-
-[//]: # ()
-[//]: # (### Test Coverage)
-
-[//]: # ()
-[//]: # (Filanti includes comprehensive tests:)
-
-[//]: # ()
-[//]: # (- **Unit tests** for all modules)
-
-[//]: # (- **Integration tests** for CLI and SDK)
-
-[//]: # (- **Security tests** for timing attacks, tampering detection)
-
-[//]: # (- **Edge case tests** for error handling)
-
-[//]: # ()
-[//]: # (---)
-
 ## Error Handling
-
-All Filanti exceptions inherit from `FilantiError`:
 
 ```python
 from filanti import (
-    FilantiError,       
-    FileOperationError, 
-    HashingError,        
-    ValidationError,     
-    EncryptionError,     
-    DecryptionError,     
-    IntegrityError,      
-    SignatureError,      
-    SecretError,         
+    FilantiError,        # Base
+    FileOperationError,  # File I/O
+    HashingError,        # Hash operations
+    ValidationError,     # Input validation
+    EncryptionError,     # Encrypt failures
+    DecryptionError,     # Decrypt failures
+    IntegrityError,      # MAC/checksum failures
+    SignatureError,      # Sign/verify failures
+    SecretError,         # ENV resolution failures
 )
 
 try:
     Filanti.decrypt("file.enc", password="wrong")
 except DecryptionError as e:
-    print(f"Decryption failed: {e}")
-    print(f"Context: {e.context}")
-
-# Handle missing ENV secrets
-try:
-    Filanti.encrypt("file.txt", password="ENV:MISSING_VAR")
-except SecretError as e:
-    print(f"Secret error: {e}")
-    print(f"Missing variable: {e.env_var}")
+    print(f"Failed: {e}")
 ```
 
 ---
 
-## Configuration
+## Plugin Architecture
 
-### KDF Parameters
-
-Adjust Argon2id parameters for security/performance trade-off:
+Extend Filanti with custom algorithms:
 
 ```python
-from filanti.crypto.kdf import KDFParams, derive_key
+from filanti.core.plugins import PluginRegistry, HashPlugin
 
-# High-security settings (slower)
-params = KDFParams(
-    argon2_memory_cost=131072,  # 128 MiB
-    argon2_time_cost=4,
-    argon2_parallelism=4,
-)
+class MyHash(HashPlugin):
+    name = "my-hash"
+    digest_size = 32
+    def hash(self, data: bytes) -> bytes:
+        return custom_hash(data)
 
-# Derive key with custom params
-result = derive_key(password, salt, params)
+PluginRegistry.register_hash(MyHash())
 ```
 
-### Streaming Chunk Size
+Plugin types: `HashPlugin`, `EncryptionPlugin`, `MACPlugin`, `SignaturePlugin`, `ChecksumPlugin`, `KDFPlugin`
 
-Optimize for memory vs. performance:
+---
+
+## Streaming
+
+Memory-efficient processing for large files:
 
 ```python
-from filanti.crypto.streaming import encrypt_stream_file
+from filanti.crypto.streaming import encrypt_stream_file, decrypt_stream_file
 
-# Larger chunks = faster, more memory
-encrypt_stream_file(input_path, output_path, key, chunk_size=1024*1024)  # 1 MB
+def progress(done, total):
+    print(f"{done}/{total}")
 
-# Smaller chunks = slower, less memory
-encrypt_stream_file(input_path, output_path, key, chunk_size=16*1024)   # 16 KB
+encrypt_stream_file("large.bin", "large.bin.enc", key,
+                     chunk_size=64*1024, progress_callback=progress)
 ```
 
 ---
 
-## Contributors || Acknowledgements
-[@stephenlb](https://github.com/stephenlb) Thanks for the inspiration and guidance on encryption and security best practices.
+## Secure Memory
 
-### Development Setup
+```python
+from filanti.core.secure_memory import SecureBytes, SecureString
 
-```bash
-git clone https://github.com/decliqe/Filanti.git
-cd filanti
-pip install -e ".[dev]"
+with SecureBytes(sensitive_data) as secure:
+    process(secure.data)
+# Automatically zeroed on exit
+
+with SecureString("my-password") as pwd:
+    use_password(pwd.value)
 ```
 
-[//]: # (### Code Quality)
-
-[//]: # ()
-[//]: # (```bash)
-
-[//]: # (# Linting)
-
-[//]: # (ruff check .)
-
-[//]: # ()
-[//]: # (# Type checking)
-
-[//]: # (mypy filanti)
-
-[//]: # ()
-[//]: # (# Format code)
-
-[//]: # (ruff format .)
-
-[//]: # (```)
-
-[//]: # (### Pull Request Guidelines)
-
-[//]: # ()
-[//]: # (1. Write tests for new features)
-
-[//]: # (2. Update documentation)
-
-[//]: # (3. Follow existing code style)
-
-[//]: # (4. Add type hints)
-
-[//]: # (5. Run full test suite before submitting)
-
-[//]: # ()
-[//]: # (---)
+---
 
 ## Changelog
 
+### v2.0.0
 
-```markdown
-## v1.0.0 (2026-01-16)
-## [1.1.0] - 2026-02-06
+**New:**
+- Orchestrator pipeline (ThreatEngine → PolicyEngine → KMS → EngineRouter)
+- Interactive REPL with tab-completion, persistent history, session state
+- Threat modes: dev, production, paranoid
+- Policy enforcement: default, enterprise, relaxed
+- Built-in KMS with LocalProvider + envelope encryption
+- v2 SDK (`filanti.api.sdk_v2.Filanti`) — orchestrator-routed
+- Engine architecture: CryptoEngine, HashingEngine, IntegrityEngine, KDFEngine
+- 380+ security tests (OWASP, timing, tampering, memory)
+- REPL commands for all operations: keygen, keygen-asymmetric, encrypt-pubkey, decrypt-privkey, info-hybrid, verify-hash, verify-mac, verify-checksum, algorithms, version, KMS subcommands
 
-### Added
-- **Secret Resolution**: Support for PowerShell-style `$env:VAR` syntax
-- **Secret Resolution**: Support for shell-style `${VAR}` syntax
-- **Secret Resolution**: Support for dot notation `env.VAR` syntax
-- **Secret Resolution**: `.env` file loading via `load_dotenv()`
-- **CLI**: `--env` option for PowerShell-friendly secret resolution (all secret commands)
-- **CLI**: `--dotenv` option to load secrets from .env files (all secret commands)
-- **CLI**: `--env-key` option to select specific variable from .env
-- **CLI**: `--remove-source` option to delete original after encryption
-- **Encryption**: `remove_source` and `secure_delete` parameters
-- **Integrity**: Encrypted `.mac` sidecar file option
-- **FileManager**: `secure_delete()` method with multi-pass overwrite
+**Changed:**
+- Default entry point is now the REPL (`python -m filanti`)
+- Encrypted metadata format v2 (backward compatible — reads v1)
+- Expanded ENV secret patterns ($env:, ${}, env.)
 
-### Changed
-- **File Format**: Symmetric encryption metadata is now encrypted (v2 format)
-- **File Format**: Asymmetric/hybrid encryption metadata is now encrypted (v2 format)
-- **File Format**: Minimal public header (base64 encoded product + version only)
-- **Integrity**: Reduced metadata in `.mac` files (optional)
-- Backward compatible: All v1 format files can still be read
+**Security:**
+- All 21 OWASP-audit findings remediated
+- Constant-time comparisons everywhere
+- Secure memory zeroing for sensitive data
+- Multi-pass secure deletion
+- Policy-enforced minimum password lengths
+- Algorithm restriction enforcement
 
-### Security
-- Reduced information leakage in encrypted files
-- Reduced information leakage in hybrid encrypted files
-- Added secure deletion option for source files
-- All secret-accepting commands support multiple ENV reference formats
+### v1.1.0
 
-### Commands Updated
-- `encrypt`, `decrypt`: Full ENV pattern support
-- `mac`, `verify-mac`: Full ENV pattern support
-- `keygen`, `sign`: Full ENV pattern support
-- `keygen-asymmetric`, `decrypt-pubkey`: Full ENV pattern support
-```
+- Secret resolution: `$env:VAR`, `${VAR}`, `env.VAR` formats
+- `.env` file loading
+- `--remove-source` / `--no-secure-delete` options
+- CLI `--env` / `--dotenv` / `--env-key` options
+
+### v1.0.0
+
+- Symmetric encryption (AES-256-GCM, ChaCha20-Poly1305)
+- Hybrid encryption (X25519, RSA-OAEP)
+- Hashing (SHA-2, SHA-3, BLAKE2b)
+- HMAC, digital signatures, checksums
+- Streaming large-file support
+- Plugin architecture
+- Secure memory handling
+- CLI + Python SDK
 
 ---
-[//]: # (**Phase 1 - Foundation**)
 
-[//]: # (- Project scaffolding and architecture)
+## Contributors & Acknowledgements
 
-[//]: # (- Core file handling and error framework)
+[@stephenlb](https://github.com/stephenlb) — inspiration and guidance on encryption and security best practices.
 
-[//]: # (- Cryptographic hashing &#40;SHA-256, SHA-512, SHA-3, BLAKE2b&#41;)
+---
 
-[//]: # (- Initial test suite)
-
-[//]: # ()
-[//]: # (**Phase 2 - Encryption Layer**)
-
-[//]: # (- Symmetric encryption &#40;AES-256-GCM, ChaCha20-Poly1305&#41;)
-
-[//]: # (- Password-based encryption with Argon2id)
-
-[//]: # (- Key derivation functions &#40;Argon2id, Scrypt&#41;)
-
-[//]: # (- Secure metadata format)
-
-[//]: # ()
-[//]: # (**Phase 3 - Integrity & Authentication**)
-
-[//]: # (- HMAC integrity checks &#40;SHA-256/384/512, SHA3, BLAKE2b&#41;)
-
-[//]: # (- Digital signatures &#40;Ed25519, ECDSA P-256/P-384/P-521&#41;)
-
-[//]: # (- Verification workflows)
-
-[//]: # (- Detached metadata support &#40;.mac, .sig, .checksum files&#41;)
-
-[//]: # (- Non-cryptographic checksums &#40;CRC32, Adler32, XXHash64&#41;)
-
-[//]: # ()
-[//]: # (**Phase 4 - CLI & SDK**)
-
-[//]: # (- Full CLI with all operations)
-
-[//]: # (- Python SDK &#40;`Filanti` class&#41;)
-
-[//]: # (- JSON output for automation)
-
-[//]: # (- Key management commands)
-
-[//]: # (- Comprehensive test coverage)
-
-[//]: # ()
-[//]: # (**Phase 5 - Hardening & Extensions**)
-
-[//]: # (- Streaming large-file support)
-
-[//]: # (- Secure memory handling &#40;SecureBytes, SecureString&#41;)
-
-[//]: # (- Performance optimizations)
-
-[//]: # (- Plugin architecture)
-
-[//]: # (- Security testing &#40;51+ security tests&#41;)
-
-[//]: # ()
-[//]: # (---)
-
-[//]: # ()
 ## License
-
 
 MIT License
 
-[//]: # ()
-[//]: # (Copyright &#40;c&#41; 2026 Filanti Contributors)
-
-[//]: # ()
-[//]: # ()
-[//]: # (Permission is hereby granted, free of charge, to any person obtaining a copy)
-
-[//]: # ()
-[//]: # (of this software and associated documentation files &#40;the "Software"&#41;, to deal)
-
-[//]: # ()
-[//]: # (in the Software without restriction, including without limitation the rights)
-
-[//]: # ()
-[//]: # (to use, copy, modify, merge, publish, distribute, sublicense, and/or sell)
-
-[//]: # ()
-[//]: # (copies of the Software, and to permit persons to whom the Software is)
-
-[//]: # ()
-[//]: # (furnished to do so, subject to the following conditions:)
-
-[//]: # ()
-[//]: # ()
-[//]: # (The above copyright notice and this permission notice shall be included in all)
-
-[//]: # ()
-[//]: # (copies or substantial portions of the Software.)
-
-[//]: # ()
-[//]: # ()
-[//]: # (THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR)
-
-[//]: # ()
-[//]: # (IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,)
-
-[//]: # ()
-[//]: # (FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE)
-
-[//]: # ()
-[//]: # (AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER)
-
-[//]: # ()
-[//]: # (LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,)
-
-[//]: # ()
-[//]: # (OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE)
-
-[//]: # ()
-[//]: # (SOFTWARE.)
-
-
 ---
 
-
 <p align="center">
-
   Maintained by Decliqe
-
 </p>
-
-[//]: # ()
