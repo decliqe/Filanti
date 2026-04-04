@@ -644,10 +644,8 @@ def info(
             output_json({
                 "success": True,
                 "file": str(file.resolve()),
-                "format": "v2.1 (encrypted metadata with KDF block)",
-                "kdf_algorithm": kdf_info.get("a"),
-                "kdf_params": kdf_info.get("p"),
-                "note": "Full metadata is encrypted — provide key to inspect all fields.",
+                "format": "v2.1 (password-encrypted)",
+                "note": "All metadata is encrypted — provide key to inspect.",
             })
         else:
             output_json({

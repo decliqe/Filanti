@@ -223,18 +223,22 @@ def decrypt_file_with_password(
             )
 
         # Derive key from KDF block parameters
-        salt_hex = kdf_info.get("s")
+        salt = kdf_info.get("s")
         kdf_algorithm = kdf_info.get("a")
         kdf_params = kdf_info.get("p")
 
-        if salt_hex is None or kdf_algorithm is None:
+        if salt is None or kdf_algorithm is None:
             raise DecryptionError(
                 "Invalid v2.1 KDF block: missing salt or algorithm",
             )
 
+        # Salt is raw bytes from binary KDF block
+        if isinstance(salt, str):
+            salt = bytes.fromhex(salt)
+
         key = derive_key_with_salt(
             password=password,
-            salt=bytes.fromhex(salt_hex),
+            salt=salt,
             algorithm=kdf_algorithm,
             params=kdf_params,
         )

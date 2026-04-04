@@ -173,7 +173,7 @@ class CryptoEngine(BaseEngine):
         if ctx.password is not None and ctx.key is None and ctx.input_bytes is not None:
             from filanti.crypto.encryption import extract_kdf_block, EncryptedData
             from filanti.crypto.decryption import parse_encrypted_file
-            from filanti.crypto.kdf import derive_key
+            from filanti.crypto.kdf import derive_key_with_salt
 
             kdf_info = extract_kdf_block(ctx.input_bytes)
             if kdf_info is None:
@@ -183,16 +183,20 @@ class CryptoEngine(BaseEngine):
                 )
             kdf_algo = kdf_info.get("a", "argon2id")
             kdf_params = kdf_info.get("p", {})
-            salt_hex = kdf_info.get("s")
-            if salt_hex is None:
+            salt = kdf_info.get("s")
+            if salt is None:
                 raise DecryptionError("KDF block is missing salt")
-            salt = bytes.fromhex(salt_hex)
+            if isinstance(salt, str):
+                salt = bytes.fromhex(salt)
 
-            derived = derive_key(
-                ctx.password, salt=salt, algorithm=kdf_algo, **kdf_params,
+            key = derive_key_with_salt(
+                password=ctx.password,
+                salt=salt,
+                algorithm=kdf_algo,
+                params=kdf_params,
             )
             metadata, ciphertext = parse_encrypted_file(
-                ctx.input_bytes, encryption_key=derived.key,
+                ctx.input_bytes, encryption_key=key,
             )
             encrypted = EncryptedData(
                 ciphertext=ciphertext,

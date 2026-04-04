@@ -50,6 +50,94 @@ CHUNK_SIZE = 65536
 # Minimum password length for password-based encryption
 MIN_PASSWORD_LENGTH = 8
 
+# ---------------------------------------------------------------------------
+# KDF profile IDs — maps standard configurations to single-byte identifiers.
+# File format uses opaque binary encoding instead of human-readable JSON.
+# ---------------------------------------------------------------------------
+
+_KDF_PROFILES: dict[int, tuple[str, dict]] = {
+    0x01: ("argon2id", {"memory_cost": 16384, "time_cost": 1, "parallelism": 4}),
+    0x02: ("argon2id", {"memory_cost": 65536, "time_cost": 3, "parallelism": 4}),
+    0x03: ("argon2id", {"memory_cost": 131072, "time_cost": 5, "parallelism": 4}),
+    0x11: ("scrypt", {"n": 131072, "r": 8, "p": 1}),
+}
+
+
+def _encode_kdf_block(salt: bytes, algorithm: str, params: dict) -> bytes:
+    """Encode KDF parameters as compact binary — no human-readable strings.
+
+    Standard profiles (33 bytes): [1 byte profile ID][32 bytes salt]
+    Custom argon2id (39 bytes):   [0xF1][32 bytes salt][4B memory][1B time][1B par]
+    Custom scrypt (39 bytes):     [0xF2][32 bytes salt][4B n][1B r][1B p]
+    """
+    for profile_id, (algo, prof_params) in _KDF_PROFILES.items():
+        if algo == algorithm and prof_params == params:
+            return bytes([profile_id]) + salt
+
+    if algorithm == "argon2id":
+        return (
+            b"\xF1"
+            + salt
+            + params["memory_cost"].to_bytes(4, "big")
+            + bytes([params["time_cost"]])
+            + bytes([params["parallelism"]])
+        )
+    elif algorithm == "scrypt":
+        return (
+            b"\xF2"
+            + salt
+            + params["n"].to_bytes(4, "big")
+            + bytes([params["r"]])
+            + bytes([params["p"]])
+        )
+    raise EncryptionError(f"Unsupported KDF algorithm: {algorithm}")
+
+
+def _decode_kdf_block(data: bytes) -> dict:
+    """Decode binary KDF block to parameter dict.
+
+    Returns:
+        Dict with ``"s"`` (salt as raw bytes), ``"a"`` (KDF algorithm),
+        ``"p"`` (KDF parameter dict).
+    """
+    if len(data) < 33:
+        raise EncryptionError("Invalid KDF block: too short")
+
+    profile_id = data[0]
+
+    if profile_id in _KDF_PROFILES:
+        salt = data[1:33]
+        algorithm, params = _KDF_PROFILES[profile_id]
+        return {"s": salt, "a": algorithm, "p": dict(params)}
+
+    if profile_id == 0xF1:
+        if len(data) < 39:
+            raise EncryptionError("Invalid custom argon2id KDF block")
+        return {
+            "s": data[1:33],
+            "a": "argon2id",
+            "p": {
+                "memory_cost": int.from_bytes(data[33:37], "big"),
+                "time_cost": data[37],
+                "parallelism": data[38],
+            },
+        }
+
+    if profile_id == 0xF2:
+        if len(data) < 39:
+            raise EncryptionError("Invalid custom scrypt KDF block")
+        return {
+            "s": data[1:33],
+            "a": "scrypt",
+            "p": {
+                "n": int.from_bytes(data[33:37], "big"),
+                "r": data[37],
+                "p": data[38],
+            },
+        }
+
+    raise EncryptionError(f"Unknown KDF profile: 0x{profile_id:02x}")
+
 
 def validate_password(password: str, allow_weak: bool = False) -> None:
     """Validate password meets minimum security requirements.
@@ -497,16 +585,11 @@ def encrypt_file_with_password(
                 original_size=original_size,
             )
 
-            # KDF info for the unencrypted public block
-            # (only salt + KDF algorithm + KDF params — needed pre-key-derivation)
-            kdf_info = {
-                "s": derived.salt.hex(),
-                "a": derived.algorithm,
-                "p": derived.params,
-            }
+            # Encode KDF block as compact binary (no human-readable strings)
+            kdf_block = _encode_kdf_block(derived.salt, derived.algorithm, derived.params)
 
-            # Write encrypted file with v2.1 format (KDF block + encrypted metadata)
-            output = _build_encrypted_file(result.ciphertext, metadata, bytes(key_ba), kdf_info=kdf_info)
+            # Write encrypted file with v2.1 format (binary KDF block + encrypted metadata)
+            output = _build_encrypted_file(result.ciphertext, metadata, bytes(key_ba), kdf_block=kdf_block)
             fm.write_bytes(output_path, output)
         finally:
             # Securely zero the key material
@@ -545,7 +628,7 @@ def _build_file_aad(version: int, algorithm: str, original_size: int) -> bytes:
     ).encode("utf-8")
 
 
-def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encryption_key: bytes | None = None, kdf_info: dict | None = None) -> bytes:
+def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encryption_key: bytes | None = None, kdf_block: bytes | None = None) -> bytes:
     """Build encrypted file with v2/v2.1 format (encrypted metadata).
 
     File format v2 (format_id=2, no KDF block):
@@ -560,7 +643,7 @@ def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encry
     - N bytes: Base64 header ({"p":"FLNT","v":"1.1.0","f":3})
     - 2 bytes: Header length (big-endian uint16)
     - 2 bytes: KDF block length (big-endian uint16)
-    - J bytes: KDF block (JSON: salt, KDF algorithm, KDF params)
+    - J bytes: KDF block (binary: profile ID + raw salt [+ custom params])
     - 12 bytes: Metadata nonce (for metadata encryption)
     - 4 bytes: Encrypted metadata length (big-endian uint32)
     - M bytes: Encrypted metadata ciphertext
@@ -579,17 +662,15 @@ def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encry
             "cannot build encrypted metadata without a key"
         )
 
-    # Determine format: v2.1 if KDF info present, v2 otherwise
-    format_id = 3 if kdf_info is not None else 2
+    # Determine format: v2.1 if KDF block present, v2 otherwise
+    format_id = 3 if kdf_block is not None else 2
 
     # Create header with format identifier
     header = FileHeader(format_id=format_id)
     header_b64 = header.to_base64()
 
-    # Build KDF block (only for v2.1 / password-based)
-    if kdf_info is not None:
-        kdf_block = json.dumps(kdf_info, separators=(",", ":")).encode("utf-8")
-    else:
+    # KDF block is pre-encoded as binary (only for v2.1 / password-based)
+    if kdf_block is None:
         kdf_block = b""
 
     # Generate a random nonce for metadata encryption
@@ -663,9 +744,9 @@ def extract_kdf_block(data: bytes) -> dict | None:
         data: Encrypted file bytes.
 
     Returns:
-        Dict with keys ``"s"`` (salt hex), ``"a"`` (KDF algorithm),
+        Dict with keys ``"s"`` (salt bytes), ``"a"`` (KDF algorithm),
         ``"p"`` (KDF params dict), or ``None`` if the file is not v2.1
-        (e.g., v1 legacy format or v2 without KDF block).
+        (e.g., v2 raw-key format or streaming format).
 
     Raises:
         EncryptionError: If header parsing fails.
@@ -705,8 +786,8 @@ def extract_kdf_block(data: bytes) -> dict | None:
                 if len(data) < offset + kdf_block_len:
                     return None
 
-                kdf_block = data[offset:offset + kdf_block_len]
-                return json.loads(kdf_block.decode("utf-8"))
+                kdf_raw = data[offset:offset + kdf_block_len]
+                return _decode_kdf_block(kdf_raw)
 
             except (Exception, ValueError):
                 continue
@@ -729,7 +810,7 @@ def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -
     - N bytes: Base64 header (includes "f":3)
     - 2 bytes: Header length
     - 2 bytes: KDF block length
-    - J bytes: KDF block (JSON with salt, algorithm, params)
+    - J bytes: KDF block (binary: profile ID + raw salt [+ custom params])
     - 12 bytes: Metadata nonce
     - 4 bytes: Encrypted metadata length
     - M bytes: Encrypted metadata
@@ -782,11 +863,8 @@ def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -
                     raise EncryptionError("Invalid encrypted file: KDF block too large")
                 if len(data) < offset + kdf_block_len:
                     raise EncryptionError("Invalid encrypted file: truncated KDF block")
-                kdf_block = data[offset:offset + kdf_block_len]
-                try:
-                    kdf_info = json.loads(kdf_block.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    raise EncryptionError(f"Invalid KDF block: {e}") from e
+                kdf_raw = data[offset:offset + kdf_block_len]
+                kdf_info = _decode_kdf_block(kdf_raw)
                 offset += kdf_block_len
 
         # Read metadata nonce (12 bytes)
@@ -841,7 +919,8 @@ def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -
 
         # For v2.1 files, populate KDF fields from the KDF block into metadata
         if kdf_info is not None:
-            metadata.salt = kdf_info.get("s")
+            raw_salt = kdf_info.get("s")
+            metadata.salt = raw_salt.hex() if isinstance(raw_salt, bytes) else raw_salt
             metadata.kdf_algorithm = kdf_info.get("a")
             metadata.kdf_params = kdf_info.get("p")
 
