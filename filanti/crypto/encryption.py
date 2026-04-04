@@ -38,8 +38,9 @@ DEFAULT_ALGORITHM = EncryptionAlgorithm.AES_256_GCM
 
 # File format magic bytes
 FILANTI_MAGIC = b"FLNT"
-FORMAT_VERSION = 1  # Legacy v1 format version
-FORMAT_VERSION_V2 = 2  # New v2 format with encrypted metadata
+FORMAT_VERSION = 1  # Legacy v1 format version (DEPRECATED — plaintext metadata)
+FORMAT_VERSION_V2 = 2  # v2 format with encrypted metadata
+FORMAT_VERSION_V21 = 3  # v2.1 format with KDF block + encrypted metadata
 
 # Product identifier for header
 PRODUCT_NAME = "FLNT"
@@ -209,14 +210,18 @@ class FileHeader:
     """Minimal public header for encrypted files - base64 encoded.
 
     Only exposes product name and version, no cryptographic details.
+    format_id: 2 = v2 (encrypted metadata), 3 = v2.1 (KDF block + encrypted metadata)
     """
 
     product: str = PRODUCT_NAME
     version: str = HEADER_VERSION
+    format_id: int = 2
 
     def to_base64(self) -> bytes:
         """Encode header as base64 bytes."""
         data = {"p": self.product, "v": self.version}
+        if self.format_id != 2:
+            data["f"] = self.format_id
         json_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")
         return base64.b64encode(json_bytes)
 
@@ -226,7 +231,11 @@ class FileHeader:
         try:
             json_bytes = base64.b64decode(data)
             parsed = json.loads(json_bytes.decode("utf-8"))
-            return cls(product=parsed.get("p", "FLNT"), version=parsed.get("v", "1.0.0"))
+            return cls(
+                product=parsed.get("p", "FLNT"),
+                version=parsed.get("v", "1.0.0"),
+                format_id=parsed.get("f", 2),
+            )
         except Exception as e:
             raise EncryptionError(f"Invalid file header: {e}") from e
 
@@ -393,14 +402,14 @@ def encrypt_file(
         original_size = len(plaintext)
 
         # Build AAD from stable metadata fields (not nonce, since it changes per encryption)
-        metadata_aad = _build_file_aad(FORMAT_VERSION, algorithm.value, original_size)
+        metadata_aad = _build_file_aad(FORMAT_VERSION_V2, algorithm.value, original_size)
 
         # Encrypt with AAD binding
         result = encrypt_bytes(plaintext, key, algorithm, associated_data=metadata_aad)
 
         # Create metadata with actual nonce
         metadata = EncryptionMetadata(
-            version=FORMAT_VERSION,
+            version=FORMAT_VERSION_V2,
             algorithm=result.algorithm,
             nonce=result.nonce.hex(),
             original_size=original_size,
@@ -473,12 +482,15 @@ def encrypt_file_with_password(
         key_ba = bytearray(derived.key)
 
         try:
-            # Encrypt with derived key
-            result = encrypt_bytes(plaintext, bytes(key_ba), algorithm)
+            # Build AAD from stable metadata fields (binds metadata to ciphertext)
+            metadata_aad = _build_file_aad(FORMAT_VERSION_V21, algorithm.value, original_size)
 
-            # Create metadata
+            # Encrypt with derived key and AAD
+            result = encrypt_bytes(plaintext, bytes(key_ba), algorithm, associated_data=metadata_aad)
+
+            # Create metadata (v2.1 — sensitive fields encrypted, KDF params in public block)
             metadata = EncryptionMetadata(
-                version=FORMAT_VERSION,
+                version=FORMAT_VERSION_V21,
                 algorithm=result.algorithm,
                 nonce=result.nonce.hex(),
                 salt=derived.salt.hex(),
@@ -487,8 +499,16 @@ def encrypt_file_with_password(
                 original_size=original_size,
             )
 
-            # Write encrypted file with v1 format (password files need plaintext KDF params)
-            output = _build_encrypted_file_v1(result.ciphertext, metadata)
+            # KDF info for the unencrypted public block
+            # (only salt + KDF algorithm + KDF params — needed pre-key-derivation)
+            kdf_info = {
+                "s": derived.salt.hex(),
+                "a": derived.algorithm,
+                "p": derived.params,
+            }
+
+            # Write encrypted file with v2.1 format (KDF block + encrypted metadata)
+            output = _build_encrypted_file(result.ciphertext, metadata, bytes(key_ba), kdf_info=kdf_info)
             fm.write_bytes(output_path, output)
         finally:
             # Securely zero the key material
@@ -527,12 +547,22 @@ def _build_file_aad(version: int, algorithm: str, original_size: int) -> bytes:
     ).encode("utf-8")
 
 
-def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encryption_key: bytes | None = None) -> bytes:
-    """Build encrypted file with v2 format (encrypted metadata).
+def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encryption_key: bytes | None = None, kdf_info: dict | None = None) -> bytes:
+    """Build encrypted file with v2/v2.1 format (encrypted metadata).
 
-    File format v2:
+    File format v2 (format_id=2, no KDF block):
     - N bytes: Base64 header ({"p":"FLNT","v":"1.1.0"})
     - 2 bytes: Header length (big-endian uint16)
+    - 12 bytes: Metadata nonce (for metadata encryption)
+    - 4 bytes: Encrypted metadata length (big-endian uint32)
+    - M bytes: Encrypted metadata ciphertext
+    - K bytes: File ciphertext
+
+    File format v2.1 (format_id=3, with KDF block for password-based):
+    - N bytes: Base64 header ({"p":"FLNT","v":"1.1.0","f":3})
+    - 2 bytes: Header length (big-endian uint16)
+    - 2 bytes: KDF block length (big-endian uint16)
+    - J bytes: KDF block (JSON: salt, KDF algorithm, KDF params)
     - 12 bytes: Metadata nonce (for metadata encryption)
     - 4 bytes: Encrypted metadata length (big-endian uint32)
     - M bytes: Encrypted metadata ciphertext
@@ -545,42 +575,60 @@ def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encry
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.backends import default_backend
 
-    # Create minimal public header
-    header = FileHeader()
+    if encryption_key is None:
+        raise EncryptionError(
+            "encryption_key is required for v2 format — "
+            "cannot build encrypted metadata without a key"
+        )
+
+    # Determine format: v2.1 if KDF info present, v2 otherwise
+    format_id = 3 if kdf_info is not None else 2
+
+    # Create header with format identifier
+    header = FileHeader(format_id=format_id)
     header_b64 = header.to_base64()
+
+    # Build KDF block (only for v2.1 / password-based)
+    if kdf_info is not None:
+        kdf_block = json.dumps(kdf_info, separators=(",", ":")).encode("utf-8")
+    else:
+        kdf_block = b""
 
     # Generate a random nonce for metadata encryption
     meta_nonce = generate_nonce(NONCE_SIZE_GCM)
 
     # Derive metadata encryption key from the user's encryption key via HKDF
-    if encryption_key is not None:
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=meta_nonce,
-            info=b"filanti-meta-v2",
-            backend=default_backend(),
-        )
-        meta_key = hkdf.derive(encryption_key)
-    else:
-        # Fallback: derive from nonce only (legacy compat, NOT recommended)
-        from hashlib import sha256
-        meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=meta_nonce,
+        info=b"filanti-meta-v2",
+        backend=default_backend(),
+    )
+    meta_key = hkdf.derive(encryption_key)
 
     # Encrypt metadata using AES-GCM
     meta_plaintext = metadata.to_bytes()
     meta_cipher = AESGCM(meta_key)
     meta_ciphertext = meta_cipher.encrypt(meta_nonce, meta_plaintext, None)
 
-    # Assemble v2 file
+    # Assemble file
     parts = [
         header_b64,                                    # Base64 header
         len(header_b64).to_bytes(2, "big"),           # Header length (2 bytes)
+    ]
+
+    # v2.1: KDF block
+    if format_id == 3:
+        parts.append(len(kdf_block).to_bytes(2, "big"))   # KDF block length (2 bytes)
+        parts.append(kdf_block)                            # KDF block
+
+    parts.extend([
         meta_nonce,                                    # Metadata nonce (12 bytes)
         len(meta_ciphertext).to_bytes(4, "big"),      # Encrypted metadata length (4 bytes)
         meta_ciphertext,                               # Encrypted metadata
         ciphertext,                                    # File ciphertext
-    ]
+    ])
 
     return b"".join(parts)
 
@@ -588,12 +636,23 @@ def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encry
 def _build_encrypted_file_v1(ciphertext: bytes, metadata: EncryptionMetadata) -> bytes:
     """Build encrypted file with legacy v1 format (plaintext metadata).
 
+    .. deprecated:: 2.1.0
+        v1 format exposes all cryptographic metadata in plaintext.
+        Use ``_build_encrypted_file()`` with v2/v2.1 format instead.
+
     File format v1 (legacy):
     - 4 bytes: Magic ("FLNT")
     - 4 bytes: Metadata length (big-endian uint32)
     - N bytes: Metadata (JSON plaintext)
     - M bytes: Ciphertext
     """
+    import warnings
+    warnings.warn(
+        "v1 format is deprecated — metadata is stored in plaintext. "
+        "Use _build_encrypted_file() with encrypted metadata instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     meta_bytes = metadata.to_bytes()
     meta_length = len(meta_bytes).to_bytes(4, "big")
 
@@ -647,12 +706,84 @@ def _parse_encrypted_file_v1(data: bytes) -> tuple[EncryptionMetadata, bytes]:
     return metadata, ciphertext
 
 
-def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -> tuple[EncryptionMetadata, bytes]:
-    """Parse v2 format encrypted file with encrypted metadata.
+def extract_kdf_block(data: bytes) -> dict | None:
+    """Extract KDF parameters from a v2.1 encrypted file without decrypting metadata.
 
-    File format v2:
+    This is used by password-based decryption to obtain salt and KDF parameters
+    before key derivation — solving the chicken-and-egg problem without
+    storing sensitive metadata in plaintext.
+
+    Args:
+        data: Encrypted file bytes.
+
+    Returns:
+        Dict with keys ``"s"`` (salt hex), ``"a"`` (KDF algorithm),
+        ``"p"`` (KDF params dict), or ``None`` if the file is not v2.1
+        (e.g., v1 legacy format or v2 without KDF block).
+
+    Raises:
+        EncryptionError: If header parsing fails.
+    """
+    if len(data) < 8:
+        return None
+
+    # v1 files start with raw FLNT magic — no KDF block
+    if data[:4] == FILANTI_MAGIC:
+        return None
+
+    # Scan for v2 base64 header
+    for try_len in range(20, 64):
+        if try_len + 2 > len(data):
+            break
+        potential_len = int.from_bytes(data[try_len:try_len+2], "big")
+        if potential_len == try_len:
+            try:
+                header = FileHeader.from_base64(data[:try_len])
+                if not header.validate():
+                    continue
+
+                # Only v2.1 (format_id=3) has a KDF block
+                if header.format_id != 3:
+                    return None
+
+                offset = try_len + 2  # past header + header_len
+
+                # Read KDF block length
+                if len(data) < offset + 2:
+                    return None
+                kdf_block_len = int.from_bytes(data[offset:offset+2], "big")
+                offset += 2
+
+                if kdf_block_len == 0 or kdf_block_len > 4096:
+                    return None
+                if len(data) < offset + kdf_block_len:
+                    return None
+
+                kdf_block = data[offset:offset + kdf_block_len]
+                return json.loads(kdf_block.decode("utf-8"))
+
+            except (Exception, ValueError):
+                continue
+
+    return None
+
+
+def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -> tuple[EncryptionMetadata, bytes]:
+    """Parse v2/v2.1 format encrypted file with encrypted metadata.
+
+    File format v2 (format_id=2):
     - N bytes: Base64 header
     - 2 bytes: Header length
+    - 12 bytes: Metadata nonce
+    - 4 bytes: Encrypted metadata length
+    - M bytes: Encrypted metadata
+    - K bytes: File ciphertext
+
+    File format v2.1 (format_id=3, with KDF block):
+    - N bytes: Base64 header (includes "f":3)
+    - 2 bytes: Header length
+    - 2 bytes: KDF block length
+    - J bytes: KDF block (JSON with salt, algorithm, params)
     - 12 bytes: Metadata nonce
     - 4 bytes: Encrypted metadata length
     - M bytes: Encrypted metadata
@@ -666,6 +797,7 @@ def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -
         # Find header boundary by scanning for valid base64 header
         header_b64 = None
         header_len_pos = None
+        header = None
 
         for try_len in range(20, 64):
             if try_len + 2 > len(data):
@@ -675,22 +807,41 @@ def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -
             if potential_len == try_len:
                 # Found matching header length
                 try:
-                    FileHeader.from_base64(potential_header)
+                    header = FileHeader.from_base64(potential_header)
                     header_b64 = potential_header
                     header_len_pos = try_len
                     break
                 except (Exception, ValueError):
                     continue
 
-        if header_b64 is None or header_len_pos is None:
+        if header_b64 is None or header_len_pos is None or header is None:
             raise EncryptionError("Invalid encrypted file: cannot parse v2 header")
 
         # Parse and validate header
-        header = FileHeader.from_base64(header_b64)
         if not header.validate():
             raise EncryptionError("Invalid encrypted file: wrong product identifier")
 
         offset = header_len_pos + 2  # Skip header + header length bytes
+
+        # v2.1: Read KDF block if format_id == 3
+        kdf_info = None
+        if header.format_id == 3:
+            if len(data) < offset + 2:
+                raise EncryptionError("Invalid encrypted file: truncated KDF block length")
+            kdf_block_len = int.from_bytes(data[offset:offset+2], "big")
+            offset += 2
+
+            if kdf_block_len > 0:
+                if kdf_block_len > 4096:
+                    raise EncryptionError("Invalid encrypted file: KDF block too large")
+                if len(data) < offset + kdf_block_len:
+                    raise EncryptionError("Invalid encrypted file: truncated KDF block")
+                kdf_block = data[offset:offset + kdf_block_len]
+                try:
+                    kdf_info = json.loads(kdf_block.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    raise EncryptionError(f"Invalid KDF block: {e}") from e
+                offset += kdf_block_len
 
         # Read metadata nonce (12 bytes)
         if len(data) < offset + NONCE_SIZE_GCM:
@@ -717,29 +868,36 @@ def _parse_encrypted_file_v2(data: bytes, encryption_key: bytes | None = None) -
         ciphertext = data[offset:]
 
         # Derive metadata decryption key from encryption key via HKDF
-        if encryption_key is not None:
-            hkdf = HKDF(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=meta_nonce,
-                info=b"filanti-meta-v2",
-                backend=default_backend(),
+        if encryption_key is None:
+            raise EncryptionError(
+                "Cannot decrypt v2 metadata without encryption key. "
+                "For password-based files, derive the key from the KDF block first."
             )
-            meta_key = hkdf.derive(encryption_key)
-        else:
-            # Fallback: derive from nonce only (legacy compat)
-            from hashlib import sha256
-            meta_key = sha256(meta_nonce + b"filanti-meta-v2").digest()
+
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=meta_nonce,
+            info=b"filanti-meta-v2",
+            backend=default_backend(),
+        )
+        meta_key = hkdf.derive(encryption_key)
 
         # Decrypt metadata
         meta_cipher = AESGCM(meta_key)
         try:
             meta_plaintext = meta_cipher.decrypt(meta_nonce, meta_ciphertext, None)
         except InvalidTag:
-            raise EncryptionError("Invalid encrypted file: metadata authentication failed")
+            raise EncryptionError("Invalid encrypted file: metadata authentication failed (wrong key?)")
 
         # Parse metadata
         metadata = EncryptionMetadata.from_bytes(meta_plaintext)
+
+        # For v2.1 files, populate KDF fields from the KDF block into metadata
+        if kdf_info is not None:
+            metadata.salt = kdf_info.get("s")
+            metadata.kdf_algorithm = kdf_info.get("a")
+            metadata.kdf_params = kdf_info.get("p")
 
         return metadata, ciphertext
 

@@ -16,3 +16,4 @@ filanti.egg-info/
 .scratchpad/
 .venv/
 .pytest_cache/
+.tmp/

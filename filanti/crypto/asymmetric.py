@@ -215,7 +215,18 @@ class HybridEncryptedData:
         return b"".join(parts)
 
     def to_bytes_v1(self) -> bytes:
-        """Serialize to bytes using legacy v1 format (for backward compatibility)."""
+        """Serialize to bytes using legacy v1 format (for backward compatibility).
+
+        .. deprecated:: 2.1.0
+            v1 format exposes all metadata in plaintext. Use ``to_bytes()`` instead.
+        """
+        import warnings
+        warnings.warn(
+            "to_bytes_v1() is deprecated — metadata is stored in plaintext. "
+            "Use to_bytes() with encrypted metadata instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         meta = {
             "version": ASYMMETRIC_FORMAT_VERSION,
             "symmetric_algorithm": self.symmetric_algorithm,

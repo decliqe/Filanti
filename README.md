@@ -74,7 +74,7 @@ Filanti v2 is a ground-up redesign of the execution model. Every operation now f
 | Security tests | Basic | 380+ tests (OWASP, timing, tampering) |
 | Secure deletion | — | Multi-pass overwrite with `--remove-source` |
 | ENV secrets | `ENV:VAR` only | `ENV:VAR`, `$env:VAR`, `${VAR}`, `env.VAR` |
-| v1 compatibility | — | ✅ Full backward compatibility |
+| v1 compatibility | — |  Full backward compatibility |
 
 ### Threat Modes
 

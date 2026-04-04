@@ -14,7 +14,7 @@ import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from filanti import __version__
 from filanti.core.orchestrator import Orchestrator
@@ -27,9 +27,10 @@ from filanti.threat.engine import ThreatEngine
 
 try:
     import readline
-    _HAS_READLINE = True
 except ImportError:
-    _HAS_READLINE = False
+    readline = None  # type: ignore[assignment]
+
+_HAS_READLINE = readline is not None
 
 # ------------------------------------------------------------------
 # ANSI colors (disabled when output is not a terminal)
@@ -292,7 +293,7 @@ class _Completer:
 
     def complete(self, text: str, state: int) -> str | None:
         if state == 0:
-            line = readline.get_line_buffer() if _HAS_READLINE else ""
+            line = readline.get_line_buffer() if readline is not None else ""
             stripped = line.lstrip()
             parts = stripped.split()
             n_parts = len(parts)
@@ -390,7 +391,7 @@ class REPL:
 
     def _setup_readline(self) -> None:
         """Configure readline for tab-completion and persistent history."""
-        if not self._interactive:
+        if not self._interactive or readline is None:
             return
         completer = _Completer(self._session)
         readline.set_completer(completer.complete)
@@ -409,7 +410,7 @@ class REPL:
 
     def _save_history(self) -> None:
         """Persist readline history to disk."""
-        if not self._interactive:
+        if not self._interactive or readline is None:
             return
         try:
             readline.write_history_file(str(HISTORY_FILE))
@@ -535,10 +536,10 @@ class REPL:
 
     def _cmd_clear(self, _args: list[str]) -> None:
         """Clear the terminal screen."""
-        if self._stdout is sys.stdout:
-            os.system("clear" if os.name != "nt" else "cls")
-        else:
-            self._print("\033[2J\033[H")
+        # Use ANSI escape codes directly — avoid os.system() to prevent
+        # command injection via PATH manipulation.
+        self._stdout.write("\033[2J\033[H")
+        self._stdout.flush()
 
     def _cmd_set(self, args: list[str]) -> None:
         if len(args) < 2:
@@ -792,8 +793,8 @@ class REPL:
         algorithm = opts.get("algorithm", "hmac-sha256")
         from filanti.integrity.mac import compute_file_mac
         computed = compute_file_mac(opts["file"], key_bytes, algorithm)
-        import secrets as _secrets
-        if _secrets.compare_digest(computed.mac, mac_hex):
+        import hmac as _hmac
+        if _hmac.compare_digest(str(computed.mac), str(mac_hex)):
             self._print(f"{C.GREEN}Valid{C.RESET} — MAC matches")
         else:
             self._print(f"{C.RED}INVALID{C.RESET} — MAC mismatch")
@@ -807,7 +808,7 @@ class REPL:
         algorithm = args[2] if len(args) > 2 else "sha256"
         from filanti.integrity.checksum import compute_file_checksum
         result = compute_file_checksum(file_path, algorithm)
-        if result.checksum.lower() == expected.lower():
+        if str(result.checksum).lower() == expected.lower():
             self._print(f"{C.GREEN}Valid{C.RESET} — checksum matches")
         else:
             self._print(f"{C.RED}INVALID{C.RESET} — checksum mismatch")
@@ -863,7 +864,7 @@ class REPL:
             )
             return
         file_path = args[0]
-        pubkeys: list[str] = []
+        pubkeys: list[bytes | str | Path] = []
         output: str | None = None
         algorithm = "x25519"
         i = 1
@@ -1094,7 +1095,7 @@ class REPL:
     # Option parsing helpers
     # ------------------------------------------------------------------
 
-    def _parse_file_opts(self, args: list[str]) -> dict[str, str | bool] | None:
+    def _parse_file_opts(self, args: list[str]) -> dict[str, Any] | None:
         """Minimal ``--key value`` / ``--flag`` parser for crypto commands."""
         if not args:
             self._print(
@@ -1103,7 +1104,7 @@ class REPL:
             )
             return None
 
-        opts: dict[str, str | bool] = {"file": args[0]}
+        opts: dict[str, Any] = {"file": args[0]}
         i = 1
         while i < len(args):
             a = args[i]
