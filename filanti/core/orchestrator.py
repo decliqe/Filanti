@@ -248,4 +248,29 @@ class Orchestrator:
         engine = self._router.route(ctx.operation)
         return engine.execute(ctx)
 
+    # ------------------------------------------------------------------
+    # Public KMS accessors (used by REPL and SDK)
+    # ------------------------------------------------------------------
+
+    @property
+    def kms_provider_name(self) -> str:
+        """Human-readable name of the active KMS provider."""
+        return self._km.provider_name
+
+    def kms_create_master_key(self, key_id: str):
+        """Create a new master key via the KMS provider."""
+        return self._km.create_master_key(key_id)
+
+    def kms_list_keys(self) -> list[str]:
+        """List available KMS master key IDs."""
+        return self._km.list_keys()
+
+    def kms_generate_data_key(self, key_id: str = "default"):
+        """Generate a new data key wrapped by master key *key_id*."""
+        return self._km.generate_data_key(key_id)
+
+    def kms_unwrap_key(self, wrapped: bytes, key_id: str) -> bytes:
+        """Unwrap a previously wrapped data key."""
+        return self._km.unwrap_key(wrapped, key_id)
+
 

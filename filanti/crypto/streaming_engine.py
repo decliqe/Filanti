@@ -20,13 +20,21 @@ from filanti.core.secure_memory import secure_random_bytes
 from filanti.crypto.cipher_engine import CipherEngine, nonce_size_for
 from filanti.crypto.encryption import EncryptionAlgorithm, EncryptionMetadata
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
+from cryptography.exceptions import InvalidTag
+
 # Defaults
 DEFAULT_CHUNK_SIZE: int = 64 * 1024       # 64 KiB
 MAX_CHUNK_SIZE: int = 16 * 1024 * 1024    # 16 MiB
 
 # Magic for the streaming sub-format header
 _MAGIC: bytes = b"FLNT"
-_STREAM_VERSION: int = 2
+_STREAM_VERSION: int = 3  # v3: encrypted header
+
+# HKDF info label for streaming header encryption
+_STREAM_HDR_INFO: bytes = b"filanti-stream-hdr"
 
 ProgressCallback = Callable[[int, int], None] | None
 
@@ -80,7 +88,7 @@ class StreamingEngine:
 
         # Write stream header
         output_stream.write(
-            _build_header(self.algorithm, base_nonce, chunk_size),
+            _build_header(self.algorithm, base_nonce, chunk_size, key),
         )
 
         total: int = 0
@@ -138,7 +146,7 @@ class StreamingEngine:
 
         Returns the total plaintext byte count.
         """
-        hdr = _parse_header(input_stream)
+        hdr = _parse_header(input_stream, key)
         algorithm = EncryptionAlgorithm(hdr["algorithm"])
 
         # We trust the header's algorithm — it was written by us
@@ -258,28 +266,102 @@ def _build_header(
     algorithm: EncryptionAlgorithm,
     base_nonce: bytes,
     chunk_size: int,
+    key: bytes,
 ) -> bytes:
-    hdr = bytearray(_MAGIC)
-    hdr.append(_STREAM_VERSION)
-    hdr.append(0 if algorithm is EncryptionAlgorithm.AES_256_GCM else 1)
-    hdr.extend(struct.pack(">I", chunk_size))
-    hdr.append(len(base_nonce))
-    hdr.extend(base_nonce)
-    return bytes(hdr)
+    """Build encrypted streaming header.
+
+    Plaintext prefix (magic + version) is authenticated via AAD.
+    Payload (algorithm, chunk_size, base_nonce) is AES-GCM encrypted.
+    """
+    alg_id = 0 if algorithm is EncryptionAlgorithm.AES_256_GCM else 1
+
+    # Plaintext prefix
+    prefix = bytearray(_MAGIC)
+    prefix.append(_STREAM_VERSION)
+
+    # Payload to encrypt
+    payload = bytearray()
+    payload.append(alg_id)
+    payload.extend(struct.pack(">I", chunk_size))
+    payload.append(len(base_nonce))
+    payload.extend(base_nonce)
+
+    # Derive header key
+    header_nonce = secure_random_bytes(12)
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=header_nonce,
+        info=_STREAM_HDR_INFO,
+    )
+    header_key = hkdf.derive(key)
+
+    # Encrypt with AAD = prefix
+    cipher = AESGCM(header_key)
+    encrypted_payload = cipher.encrypt(header_nonce, bytes(payload), bytes(prefix))
+
+    result = bytearray(prefix)
+    result.extend(header_nonce)
+    result.extend(struct.pack(">H", len(encrypted_payload)))
+    result.extend(encrypted_payload)
+    return bytes(result)
 
 
-def _parse_header(stream: BinaryIO) -> dict[str, object]:
+def _parse_header(stream: BinaryIO, key: bytes) -> dict[str, object]:
+    """Parse and decrypt streaming header."""
     magic = stream.read(4)
     if magic != _MAGIC:
         raise DecryptionError("Bad stream magic bytes")
-    version = stream.read(1)[0]
+
+    version_byte = stream.read(1)
+    if len(version_byte) < 1:
+        raise DecryptionError("Truncated stream version")
+    version = version_byte[0]
     if version != _STREAM_VERSION:
         raise DecryptionError(f"Unsupported stream version: {version}")
-    alg_id = stream.read(1)[0]
+
+    aad = magic + version_byte
+
+    # Read header nonce (12 bytes)
+    header_nonce = stream.read(12)
+    if len(header_nonce) < 12:
+        raise DecryptionError("Truncated header nonce")
+
+    # Read encrypted payload length (2 bytes)
+    enc_len_bytes = stream.read(2)
+    if len(enc_len_bytes) < 2:
+        raise DecryptionError("Truncated payload length")
+    enc_len = struct.unpack(">H", enc_len_bytes)[0]
+
+    # Read encrypted payload
+    enc_payload = stream.read(enc_len)
+    if len(enc_payload) < enc_len:
+        raise DecryptionError("Truncated payload")
+
+    # Derive header key
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=header_nonce,
+        info=_STREAM_HDR_INFO,
+    )
+    header_key = hkdf.derive(key)
+
+    # Decrypt and authenticate
+    cipher = AESGCM(header_key)
+    try:
+        payload = cipher.decrypt(header_nonce, enc_payload, aad)
+    except InvalidTag:
+        raise DecryptionError(
+            "Stream header authentication failed (wrong key or tampered)"
+        )
+
+    # Parse payload
+    alg_id = payload[0]
     alg = "aes-256-gcm" if alg_id == 0 else "chacha20-poly1305"
-    chunk_size = struct.unpack(">I", stream.read(4))[0]
-    nonce_len = stream.read(1)[0]
-    nonce = stream.read(nonce_len)
+    chunk_size = struct.unpack(">I", payload[1:5])[0]
+    nonce_len = payload[5]
+    nonce = payload[6:6 + nonce_len]
     return {
         "version": version,
         "algorithm": alg,

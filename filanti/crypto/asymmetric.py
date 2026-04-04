@@ -59,12 +59,8 @@ SESSION_KEY_SIZE = 32
 # Nonce size for AES-GCM
 NONCE_SIZE = 12
 
-# File format versions for asymmetric encryption
-ASYMMETRIC_FORMAT_VERSION = 1  # Legacy v1 format (plaintext metadata)
-ASYMMETRIC_FORMAT_VERSION_V2 = 2  # New v2 format (encrypted metadata)
-
-# Magic bytes for asymmetric encrypted files
-ASYMMETRIC_MAGIC = b"FLAS"  # Filanti Asymmetric (v1)
+# File format version for asymmetric encryption
+ASYMMETRIC_FORMAT_VERSION_V2 = 2  # v2 format (encrypted metadata)
 
 # Product identifier for v2 header
 ASYMMETRIC_PRODUCT_NAME = "FLAS"
@@ -149,24 +145,34 @@ class HybridEncryptedData:
     symmetric_algorithm: str
     created_at: str
 
+    def __post_init__(self):
+        self._session_key: bytes | None = None
+        self._encrypted_meta: bytes | None = None
+        self._meta_nonce: bytes | None = None
+
     def to_bytes(self) -> bytes:
-        """Serialize to bytes for storage using v2 format (minimal public header).
+        """Serialize to bytes for storage using v2 format (encrypted metadata).
 
         V2 Format:
         - Base64 public header (product + version only)
         - Header length (2 bytes)
         - Session keys blob length (4 bytes)
-        - Session keys blob (contains encrypted session keys - needed before decryption)
-        - Data nonce (12 bytes) - stored in plaintext (needed for data decryption)
-        - Meta nonce (12 bytes) - for encrypting internal metadata
+        - Session keys blob (encrypted session keys — needed before decryption)
+        - Data nonce (12 bytes) — needed for data decryption
+        - Meta nonce (12 bytes) — for encrypting internal metadata
         - Encrypted internal metadata length (4 bytes)
-        - Encrypted internal metadata (algorithm, created_at - encrypted with derived key)
+        - Encrypted internal metadata (algorithm, created_at)
         - Ciphertext
 
-        Note: Session keys remain unencrypted (they're the encrypted session key).
-        Data nonce is stored in plaintext (required for ciphertext decryption).
-        Only algorithm/timestamp metadata is encrypted.
+        The metadata key is derived from the session key via HKDF,
+        ensuring only key holders can read internal metadata.
         """
+        if self._session_key is None:
+            raise EncryptionError(
+                "Cannot serialize without session key — "
+                "set _session_key before calling to_bytes()"
+            )
+
         # Create minimal public header
         header = AsymmetricFileHeader()
         header_b64 = header.to_base64()
@@ -185,10 +191,8 @@ class HybridEncryptedData:
         }
         internal_meta_bytes = json.dumps(internal_meta, separators=(",", ":")).encode("utf-8")
 
-        # Derive metadata encryption key from data nonce + ciphertext prefix
-        # Both are available at parse time, so decryption is possible
+        # Derive metadata encryption key from the SESSION KEY (not public data)
         meta_nonce = secure_random_bytes(NONCE_SIZE)
-        meta_key_material = self.nonce + self.ciphertext[:min(32, len(self.ciphertext))]
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=SESSION_KEY_SIZE,
@@ -196,7 +200,7 @@ class HybridEncryptedData:
             info=b"filanti-asym-meta-v2",
             backend=default_backend(),
         )
-        meta_key = hkdf.derive(meta_key_material)
+        meta_key = hkdf.derive(self._session_key)
 
         meta_cipher = AESGCM(meta_key)
         encrypted_meta = meta_cipher.encrypt(meta_nonce, internal_meta_bytes, None)
@@ -214,103 +218,70 @@ class HybridEncryptedData:
         ]
         return b"".join(parts)
 
-    def to_bytes_v1(self) -> bytes:
-        """Serialize to bytes using legacy v1 format (for backward compatibility).
+    def resolve_metadata(self, session_key: bytes) -> None:
+        """Decrypt internal metadata using the recovered session key.
 
-        .. deprecated:: 2.1.0
-            v1 format exposes all metadata in plaintext. Use ``to_bytes()`` instead.
+        Called by hybrid_decrypt_bytes() after the session key is recovered.
+        Populates symmetric_algorithm and created_at from encrypted metadata.
         """
-        import warnings
-        warnings.warn(
-            "to_bytes_v1() is deprecated — metadata is stored in plaintext. "
-            "Use to_bytes() with encrypted metadata instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        meta = {
-            "version": ASYMMETRIC_FORMAT_VERSION,
-            "symmetric_algorithm": self.symmetric_algorithm,
-            "created_at": self.created_at,
-            "session_keys": [sk.to_dict() for sk in self.session_keys],
-            "nonce": self.nonce.hex(),
-        }
-        meta_bytes = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+        if self._encrypted_meta is None or self._meta_nonce is None:
+            return  # Already resolved or nothing to resolve
 
-        parts = [
-            ASYMMETRIC_MAGIC,
-            len(meta_bytes).to_bytes(4, "big"),
-            meta_bytes,
-            self.ciphertext,
-        ]
-        return b"".join(parts)
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=SESSION_KEY_SIZE,
+            salt=self._meta_nonce,
+            info=b"filanti-asym-meta-v2",
+            backend=default_backend(),
+        )
+        meta_key = hkdf.derive(session_key)
+
+        meta_cipher = AESGCM(meta_key)
+        try:
+            internal_meta_bytes = meta_cipher.decrypt(
+                self._meta_nonce, self._encrypted_meta, None,
+            )
+            internal_meta = json.loads(internal_meta_bytes.decode("utf-8"))
+            self.symmetric_algorithm = internal_meta["symmetric_algorithm"]
+            self.created_at = internal_meta["created_at"]
+        except InvalidTag:
+            raise DecryptionError(
+                "Failed to decrypt internal metadata: wrong session key"
+            )
+        finally:
+            self._encrypted_meta = None
+            self._meta_nonce = None
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "HybridEncryptedData":
-        """Deserialize from bytes (supports v1 and v2 formats)."""
+        """Deserialize from bytes (v2 format only).
+
+        Internal metadata (symmetric_algorithm, created_at) remains
+        encrypted until resolve_metadata() is called with the session key.
+        """
         if len(data) < 8:
             raise DecryptionError("Invalid hybrid encrypted data: too short")
 
-        # Check for v1 format (starts with FLAS magic bytes)
-        if data[:4] == ASYMMETRIC_MAGIC:
-            return cls._from_bytes_v1(data)
-
-        # Try v2 format (starts with base64 header)
         return cls._from_bytes_v2(data)
 
     @classmethod
-    def _from_bytes_v1(cls, data: bytes) -> "HybridEncryptedData":
-        """Deserialize from v1 format bytes."""
-        meta_length = int.from_bytes(data[4:8], "big")
-
-        if len(data) < 8 + meta_length:
-            raise DecryptionError("Invalid hybrid encrypted data: truncated metadata")
-
-        meta_bytes = data[8:8 + meta_length]
-        ciphertext = data[8 + meta_length:]
-
-        try:
-            meta = json.loads(meta_bytes.decode("utf-8"))
-        except Exception as e:
-            raise DecryptionError(f"Invalid metadata: {e}") from e
-
-        session_keys = [EncryptedSessionKey.from_dict(sk) for sk in meta["session_keys"]]
-
-        return cls(
-            ciphertext=ciphertext,
-            nonce=bytes.fromhex(meta["nonce"]),
-            session_keys=session_keys,
-            symmetric_algorithm=meta["symmetric_algorithm"],
-            created_at=meta["created_at"],
-        )
-
-    @classmethod
     def _from_bytes_v2(cls, data: bytes) -> "HybridEncryptedData":
-        """Deserialize from v2 format bytes."""
+        """Deserialize from v2 format bytes.
+
+        Defers metadata decryption — stores encrypted meta blob for later
+        resolution via resolve_metadata(session_key).
+        """
         try:
             offset = 0
 
-            # Parse header length (at end of base64 header)
-            # First, find the header by reading header length which is after the base64 data
-            # We need to scan for the header length position
-            # The base64 header is variable length, so we read header_len from position after header
-
-            # Try to decode as base64 to find header end
-            # Base64 header is typically 32-40 bytes
-            # Look for header length marker
-
-            # Read first potential base64 chunk (max ~50 bytes for header)
-            max_header_len = 50
-            potential_header = data[:max_header_len]
-
-            # Find where base64 ends by looking for header length bytes
-            # Header length is 2 bytes after the base64 data
+            # Find base64 header
             header_found = False
+            max_header_len = 50
             for header_len in range(20, max_header_len):
                 try:
                     header_b64 = data[:header_len]
                     stored_len = int.from_bytes(data[header_len:header_len+2], "big")
                     if stored_len == header_len:
-                        # Validate it's valid base64
                         header = AsymmetricFileHeader.from_base64(header_b64)
                         if header.validate():
                             header_found = True
@@ -366,38 +337,17 @@ class HybridEncryptedData:
             # Remaining is ciphertext
             ciphertext = data[offset:]
 
-            # Derive meta-key to decrypt internal metadata
-            # Uses data_nonce + ciphertext[:32] as HKDF IKM (same as to_bytes)
-            meta_key_material = data_nonce + ciphertext[:min(32, len(ciphertext))]
-            hkdf = HKDF(
-                algorithm=hashes.SHA256(),
-                length=SESSION_KEY_SIZE,
-                salt=meta_nonce,
-                info=b"filanti-asym-meta-v2",
-                backend=default_backend(),
-            )
-            meta_key = hkdf.derive(meta_key_material)
-
-            try:
-                meta_cipher = AESGCM(meta_key)
-                internal_meta_bytes = meta_cipher.decrypt(meta_nonce, encrypted_meta, None)
-                internal_meta = json.loads(internal_meta_bytes.decode("utf-8"))
-            except InvalidTag:
-                # Try legacy unencrypted format (plaintext JSON metadata)
-                try:
-                    internal_meta = json.loads(encrypted_meta.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    raise DecryptionError(f"Failed to decrypt internal metadata: {e}") from e
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                raise DecryptionError(f"Invalid internal metadata: {e}") from e
-
-            return cls(
+            # Create instance with deferred metadata decryption
+            result = cls(
                 ciphertext=ciphertext,
                 nonce=data_nonce,
                 session_keys=session_keys,
-                symmetric_algorithm=internal_meta["symmetric_algorithm"],
-                created_at=internal_meta["created_at"],
+                symmetric_algorithm="",  # Deferred — call resolve_metadata()
+                created_at="",           # Deferred — call resolve_metadata()
             )
+            result._encrypted_meta = encrypted_meta
+            result._meta_nonce = meta_nonce
+            return result
 
         except DecryptionError:
             raise
@@ -911,13 +861,15 @@ def hybrid_encrypt_bytes(
             encrypted_sk.recipient_id = recipient_id
             encrypted_session_keys.append(encrypted_sk)
 
-        return HybridEncryptedData(
+        result = HybridEncryptedData(
             ciphertext=ciphertext,
             nonce=nonce,
             session_keys=encrypted_session_keys,
             symmetric_algorithm=symmetric_algorithm.value,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
+        result._session_key = session_key
+        return result
 
     except EncryptionError:
         raise
@@ -996,6 +948,9 @@ def hybrid_decrypt_bytes(
                 "Could not decrypt session key with provided private key",
                 algorithm=algorithm.value,
             )
+
+        # Resolve deferred internal metadata now that we have the session key
+        encrypted.resolve_metadata(session_key)
 
         # Decrypt data with session key
         try:
@@ -1077,7 +1032,7 @@ def hybrid_encrypt_file(
                 fm.delete(input_path)
 
         return AsymmetricMetadata(
-            version=ASYMMETRIC_FORMAT_VERSION,
+            version=ASYMMETRIC_FORMAT_VERSION_V2,
             asymmetric_algorithm=algorithm.value,
             symmetric_algorithm=symmetric_algorithm.value,
             recipient_count=len(recipient_public_keys),
@@ -1173,11 +1128,11 @@ def get_hybrid_file_metadata(path: str | Path) -> AsymmetricMetadata:
         asymmetric_algo = encrypted.session_keys[0].algorithm if encrypted.session_keys else "unknown"
 
         return AsymmetricMetadata(
-            version=ASYMMETRIC_FORMAT_VERSION,
+            version=ASYMMETRIC_FORMAT_VERSION_V2,
             asymmetric_algorithm=asymmetric_algo,
-            symmetric_algorithm=encrypted.symmetric_algorithm,
+            symmetric_algorithm=encrypted.symmetric_algorithm or "encrypted",
             recipient_count=len(encrypted.session_keys),
-            created_at=encrypted.created_at,
+            created_at=encrypted.created_at or "encrypted",
         )
 
     except DecryptionError:

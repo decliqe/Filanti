@@ -85,14 +85,17 @@ class KMSProvider(ABC):
 class LocalProvider(KMSProvider):
     """File-system-based local KMS for development and single-node use.
 
-    Master keys are stored in a directory as raw 32-byte files.
-    Key wrapping uses AES-256-GCM with an HKDF-derived wrapping key.
+    Master keys are encrypted at rest using AES-256-GCM with an HKDF-derived
+    wrapping key from a per-installation secret. Key wrapping for data keys
+    uses AES-256-GCM with a separate HKDF-derived key.
 
     **Not suitable for multi-tenant production.**  Use Vault / AWS KMS
     for production deployments.
     """
 
     _WRAP_INFO: bytes = b"filanti-kms-wrap"
+    _AT_REST_INFO: bytes = b"filanti-kms-at-rest"
+    _MASTER_SECRET_FILE: str = ".master_secret"
 
     def __init__(self, keys_dir: str | Path | None = None) -> None:
         if keys_dir is None:
@@ -105,11 +108,69 @@ class LocalProvider(KMSProvider):
         return "local"
 
     # ------------------------------------------------------------------
+    # Per-installation master secret (at-rest encryption root)
+    # ------------------------------------------------------------------
+
+    def _get_master_secret(self) -> bytes:
+        """Get or create the per-installation master secret.
+
+        This secret is used to encrypt master keys at rest, providing
+        defense-in-depth beyond OS file permissions.
+        """
+        secret_path = self._keys_dir / self._MASTER_SECRET_FILE
+        if secret_path.exists():
+            return secret_path.read_bytes()
+        # Generate new secret on first use
+        secret = secure_random_bytes(32)
+        secret_path.write_bytes(secret)
+        try:
+            os.chmod(secret_path, 0o600)
+        except OSError:
+            pass
+        return secret
+
+    def _encrypt_at_rest(self, plaintext_key: bytes) -> bytes:
+        """Encrypt key material for at-rest storage."""
+        master_secret = self._get_master_secret()
+        nonce = secure_random_bytes(12)
+        wrap_key = self._derive_at_rest_key(master_secret, nonce)
+        cipher = AESGCM(wrap_key)
+        ct: bytes = cipher.encrypt(nonce, plaintext_key, None)
+        # Format: nonce (12) ‖ ciphertext+tag
+        return nonce + ct
+
+    def _decrypt_at_rest(self, data: bytes) -> bytes:
+        """Decrypt key material from at-rest storage."""
+        if len(data) < 12:
+            raise DecryptionError("Invalid encrypted key file: too short")
+        master_secret = self._get_master_secret()
+        nonce = data[:12]
+        ct = data[12:]
+        wrap_key = self._derive_at_rest_key(master_secret, nonce)
+        cipher = AESGCM(wrap_key)
+        try:
+            return cipher.decrypt(nonce, ct, None)
+        except Exception as exc:
+            raise DecryptionError(
+                f"Failed to decrypt master key at rest: {exc}"
+            ) from exc
+
+    @classmethod
+    def _derive_at_rest_key(cls, master_secret: bytes, nonce: bytes) -> bytes:
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=nonce,
+            info=cls._AT_REST_INFO,
+        )
+        return hkdf.derive(master_secret)
+
+    # ------------------------------------------------------------------
     # Master key management
     # ------------------------------------------------------------------
 
     def create_master_key(self, key_id: str) -> Path:
-        """Generate and persist a new master key.
+        """Generate and persist a new master key (encrypted at rest).
 
         Returns:
             Path to the key file.
@@ -124,7 +185,8 @@ class LocalProvider(KMSProvider):
                 context={"key_id": key_id},
             )
         master = generate_key(DEFAULT_KEY_SIZE)
-        path.write_bytes(master)
+        encrypted = self._encrypt_at_rest(master)
+        path.write_bytes(encrypted)
         # Best-effort permission restriction
         try:
             os.chmod(path, 0o600)
@@ -139,7 +201,8 @@ class LocalProvider(KMSProvider):
                 f"Master key '{key_id}' not found",
                 context={"key_id": key_id, "dir": str(self._keys_dir)},
             )
-        return path.read_bytes()
+        data = path.read_bytes()
+        return self._decrypt_at_rest(data)
 
     def _key_path(self, key_id: str) -> Path:
         # Sanitise key_id to prevent path traversal
@@ -263,6 +326,29 @@ class KeyManager:
         # Fallback: provider doesn't expose direct wrap → error
         raise EncryptionError(
             f"Provider '{self._provider.name}' does not support direct wrap_key"
+        )
+
+    def unwrap_key(self, wrapped: bytes, key_id: str) -> bytes:
+        """Unwrap a previously wrapped data key."""
+        return self._provider.unwrap_key(wrapped, key_id)
+
+    def create_master_key(self, key_id: str):
+        """Create a new master key (local provider only)."""
+        if isinstance(self._provider, LocalProvider):
+            return self._provider.create_master_key(key_id)
+        raise EncryptionError(
+            f"Provider '{self._provider.name}' does not support create_master_key"
+        )
+
+    def list_keys(self) -> list[str]:
+        """List available master key IDs (local provider only)."""
+        if isinstance(self._provider, LocalProvider):
+            keys_dir = self._provider._keys_dir
+            if not keys_dir.exists():
+                return []
+            return sorted(kf.stem for kf in keys_dir.glob("*.key"))
+        raise EncryptionError(
+            f"Provider '{self._provider.name}' does not support list_keys"
         )
 
     # ------------------------------------------------------------------

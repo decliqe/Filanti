@@ -22,7 +22,6 @@ from filanti.hashing import crypto_hash
 from filanti.crypto import (
     encrypt_file_with_password,
     decrypt_file_with_password,
-    get_file_metadata,
     EncryptionAlgorithm,
 )
 from filanti.crypto.asymmetric import (
@@ -631,47 +630,32 @@ def info(
 ) -> None:
     """Inspect metadata from an encrypted file (algorithm, KDF, size) without decrypting.
 
-    For v2/v2.1 files, full metadata is encrypted and only partial info
-    (KDF parameters) is available without the key. For legacy v1 files,
-    all metadata is readable.
+    Metadata is encrypted in v2/v2.1 files. Only the KDF block (if present)
+    is readable without the key.
 
     Example:
         filanti info secret.txt.enc
     """
     try:
-        try:
-            metadata = get_file_metadata(file)
-            # v1 files: full metadata is accessible
+        from filanti.crypto.encryption import extract_kdf_block
+        data = file.read_bytes()
+        kdf_info = extract_kdf_block(data)
+        if kdf_info is not None:
             output_json({
                 "success": True,
                 "file": str(file.resolve()),
-                "version": metadata.version,
-                "algorithm": metadata.algorithm,
-                "kdf_algorithm": metadata.kdf_algorithm,
-                "original_size": metadata.original_size,
-                "format": "v1 (legacy — plaintext metadata)",
+                "format": "v2.1 (encrypted metadata with KDF block)",
+                "kdf_algorithm": kdf_info.get("a"),
+                "kdf_params": kdf_info.get("p"),
+                "note": "Full metadata is encrypted — provide key to inspect all fields.",
             })
-        except Exception:
-            # v2/v2.1 files: metadata is encrypted, try to extract KDF block
-            from filanti.crypto.encryption import extract_kdf_block
-            data = file.read_bytes()
-            kdf_info = extract_kdf_block(data)
-            if kdf_info is not None:
-                output_json({
-                    "success": True,
-                    "file": str(file.resolve()),
-                    "format": "v2.1 (encrypted metadata with KDF block)",
-                    "kdf_algorithm": kdf_info.get("a"),
-                    "kdf_params": kdf_info.get("p"),
-                    "note": "Full metadata is encrypted — provide key to inspect all fields.",
-                })
-            else:
-                output_json({
-                    "success": True,
-                    "file": str(file.resolve()),
-                    "format": "v2 (encrypted metadata)",
-                    "note": "All metadata is encrypted — provide key to inspect.",
-                })
+        else:
+            output_json({
+                "success": True,
+                "file": str(file.resolve()),
+                "format": "v2 (encrypted metadata)",
+                "note": "All metadata is encrypted — provide key to inspect.",
+            })
 
     except Exception as e:
         output_error(str(e))

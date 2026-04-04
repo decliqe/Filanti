@@ -191,8 +191,8 @@ def decrypt_file_with_password(
 ) -> int:
     """Decrypt a file using a password.
 
-    Supports both v2.1 format (KDF block + encrypted metadata) and
-    legacy v1 format (plaintext metadata) for backward compatibility.
+    Supports v2.1 format only (KDF block + encrypted metadata).
+    Legacy v1 format is no longer supported.
 
     Args:
         input_path: Path to encrypted file.
@@ -213,69 +213,49 @@ def decrypt_file_with_password(
         # Read encrypted file
         encrypted_data = fm.read_bytes(input_path)
 
-        # Attempt v2.1 KDF block extraction (lightweight, no metadata decryption)
+        # Extract v2.1 KDF block (lightweight, no metadata decryption)
         kdf_info = extract_kdf_block(encrypted_data)
 
-        if kdf_info is not None:
-            # ---- v2.1 path: derive key from KDF block, then decrypt ----
-            salt_hex = kdf_info.get("s")
-            kdf_algorithm = kdf_info.get("a")
-            kdf_params = kdf_info.get("p")
-
-            if salt_hex is None or kdf_algorithm is None:
-                raise DecryptionError(
-                    "Invalid v2.1 KDF block: missing salt or algorithm",
-                )
-
-            # Derive key using KDF block parameters
-            key = derive_key_with_salt(
-                password=password,
-                salt=bytes.fromhex(salt_hex),
-                algorithm=kdf_algorithm,
-                params=kdf_params,
+        if kdf_info is None:
+            raise DecryptionError(
+                "Unsupported file format: missing KDF block. "
+                "This file may be in a legacy v1 format that is no longer supported.",
             )
 
-            # Parse with key to decrypt metadata
-            metadata, ciphertext = parse_encrypted_file(encrypted_data, encryption_key=key)
+        # Derive key from KDF block parameters
+        salt_hex = kdf_info.get("s")
+        kdf_algorithm = kdf_info.get("a")
+        kdf_params = kdf_info.get("p")
 
-            # Reconstruct AAD (v2.1 uses AAD binding)
-            from filanti.crypto.encryption import _build_file_aad
-            metadata_aad = _build_file_aad(
-                metadata.version, metadata.algorithm, metadata.original_size,
+        if salt_hex is None or kdf_algorithm is None:
+            raise DecryptionError(
+                "Invalid v2.1 KDF block: missing salt or algorithm",
             )
 
-            # Create EncryptedData and decrypt with AAD
-            encrypted = EncryptedData(
-                ciphertext=ciphertext,
-                nonce=bytes.fromhex(metadata.nonce),
-                algorithm=metadata.algorithm,
-            )
+        key = derive_key_with_salt(
+            password=password,
+            salt=bytes.fromhex(salt_hex),
+            algorithm=kdf_algorithm,
+            params=kdf_params,
+        )
 
-            plaintext = decrypt_bytes(encrypted, key, associated_data=metadata_aad)
+        # Parse with key to decrypt metadata
+        metadata, ciphertext = parse_encrypted_file(encrypted_data, encryption_key=key)
 
-        else:
-            # ---- v1 legacy path: plaintext metadata (backward compat) ----
-            metadata, ciphertext = parse_encrypted_file(encrypted_data)
+        # Reconstruct AAD (v2.1 uses AAD binding)
+        from filanti.crypto.encryption import _build_file_aad
+        metadata_aad = _build_file_aad(
+            metadata.version, metadata.algorithm, metadata.original_size,
+        )
 
-            # Validate password-based encryption metadata
-            if metadata.salt is None or metadata.kdf_algorithm is None:
-                raise DecryptionError(
-                    "File was not encrypted with a password",
-                    algorithm=metadata.algorithm,
-                )
+        # Create EncryptedData and decrypt with AAD
+        encrypted = EncryptedData(
+            ciphertext=ciphertext,
+            nonce=bytes.fromhex(metadata.nonce),
+            algorithm=metadata.algorithm,
+        )
 
-            # Create EncryptedData from parsed file
-            encrypted = EncryptedData(
-                ciphertext=ciphertext,
-                nonce=bytes.fromhex(metadata.nonce),
-                algorithm=metadata.algorithm,
-                salt=bytes.fromhex(metadata.salt),
-                kdf_algorithm=metadata.kdf_algorithm,
-                kdf_params=metadata.kdf_params,
-            )
-
-            # Decrypt with password (no AAD for legacy v1)
-            plaintext = decrypt_bytes_with_password(encrypted, password)
+        plaintext = decrypt_bytes(encrypted, key, associated_data=metadata_aad)
 
         # Write output
         fm.write_bytes(output_path, plaintext)
@@ -298,20 +278,18 @@ def get_file_metadata(
 ) -> EncryptionMetadata:
     """Get metadata from an encrypted file without decrypting content.
 
-    For v2/v2.1 files, an encryption key is required to decrypt the
-    metadata. For legacy v1 files, the key is not needed (metadata is
-    plaintext — this is the vulnerability that v2.1 fixes).
+    An encryption key is required to decrypt the metadata.
 
     Args:
         input_path: Path to encrypted file.
-        encryption_key: Key for decrypting v2/v2.1 metadata.
+        encryption_key: Key for decrypting metadata (required).
         file_manager: Optional FileManager instance.
 
     Returns:
         EncryptionMetadata from the file.
 
     Raises:
-        DecryptionError: If file format is invalid or key is missing for v2.
+        DecryptionError: If file format is invalid or key is missing.
         FileOperationError: If file cannot be read.
     """
     fm = file_manager or get_file_manager()

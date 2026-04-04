@@ -87,7 +87,7 @@ _BUILTIN: dict[str, dict[str, Any]] = {
         "name": "relaxed",
         "min_password_length": 4,
         "disallow_raw_keys": False,
-        "require_encrypted_metadata": False,
+        "require_encrypted_metadata": True,
     },
 }
 

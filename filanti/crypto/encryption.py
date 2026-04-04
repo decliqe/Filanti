@@ -36,9 +36,7 @@ class EncryptionAlgorithm(str, Enum):
 # Default algorithm
 DEFAULT_ALGORITHM = EncryptionAlgorithm.AES_256_GCM
 
-# File format magic bytes
-FILANTI_MAGIC = b"FLNT"
-FORMAT_VERSION = 1  # Legacy v1 format version (DEPRECATED — plaintext metadata)
+# File format versions
 FORMAT_VERSION_V2 = 2  # v2 format with encrypted metadata
 FORMAT_VERSION_V21 = 3  # v2.1 format with KDF block + encrypted metadata
 
@@ -633,40 +631,14 @@ def _build_encrypted_file(ciphertext: bytes, metadata: EncryptionMetadata, encry
     return b"".join(parts)
 
 
-def _build_encrypted_file_v1(ciphertext: bytes, metadata: EncryptionMetadata) -> bytes:
-    """Build encrypted file with legacy v1 format (plaintext metadata).
-
-    .. deprecated:: 2.1.0
-        v1 format exposes all cryptographic metadata in plaintext.
-        Use ``_build_encrypted_file()`` with v2/v2.1 format instead.
-
-    File format v1 (legacy):
-    - 4 bytes: Magic ("FLNT")
-    - 4 bytes: Metadata length (big-endian uint32)
-    - N bytes: Metadata (JSON plaintext)
-    - M bytes: Ciphertext
-    """
-    import warnings
-    warnings.warn(
-        "v1 format is deprecated — metadata is stored in plaintext. "
-        "Use _build_encrypted_file() with encrypted metadata instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    meta_bytes = metadata.to_bytes()
-    meta_length = len(meta_bytes).to_bytes(4, "big")
-
-    return FILANTI_MAGIC + meta_length + meta_bytes + ciphertext
-
-
 def parse_encrypted_file(data: bytes, encryption_key: bytes | None = None) -> tuple[EncryptionMetadata, bytes]:
     """Parse encrypted file header and extract ciphertext.
 
-    Supports both v1 (legacy) and v2 formats.
+    Supports v2 and v2.1 formats only. Legacy v1 format is no longer supported.
 
     Args:
         data: Encrypted file bytes.
-        encryption_key: Optional encryption key for v2 metadata decryption.
+        encryption_key: Encryption key for v2 metadata decryption.
 
     Returns:
         Tuple of (metadata, ciphertext).
@@ -677,33 +649,7 @@ def parse_encrypted_file(data: bytes, encryption_key: bytes | None = None) -> tu
     if len(data) < 8:
         raise EncryptionError("Invalid encrypted file: too short")
 
-    # Check for v1 format (starts with raw FLNT magic bytes)
-    if data[:4] == FILANTI_MAGIC:
-        return _parse_encrypted_file_v1(data)
-
-    # Try v2 format (starts with base64-encoded header)
     return _parse_encrypted_file_v2(data, encryption_key)
-
-
-def _parse_encrypted_file_v1(data: bytes) -> tuple[EncryptionMetadata, bytes]:
-    """Parse legacy v1 format encrypted file."""
-    if data[:4] != FILANTI_MAGIC:
-        raise EncryptionError("Invalid encrypted file: bad magic bytes")
-
-    meta_length = int.from_bytes(data[4:8], "big")
-
-    if len(data) < 8 + meta_length:
-        raise EncryptionError("Invalid encrypted file: truncated metadata")
-
-    meta_bytes = data[8:8 + meta_length]
-    ciphertext = data[8 + meta_length:]
-
-    try:
-        metadata = EncryptionMetadata.from_bytes(meta_bytes)
-    except Exception as e:
-        raise EncryptionError(f"Invalid encrypted file metadata: {e}") from e
-
-    return metadata, ciphertext
 
 
 def extract_kdf_block(data: bytes) -> dict | None:
@@ -727,8 +673,8 @@ def extract_kdf_block(data: bytes) -> dict | None:
     if len(data) < 8:
         return None
 
-    # v1 files start with raw FLNT magic — no KDF block
-    if data[:4] == FILANTI_MAGIC:
+    # Streaming format files start with raw b"FLNT" — no KDF block
+    if data[:4] == b"FLNT":
         return None
 
     # Scan for v2 base64 header

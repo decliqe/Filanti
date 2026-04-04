@@ -46,9 +46,9 @@ _PROFILES: dict[str, dict[str, Any]] = {
             "chunk_size": 65536,
         },
         "policy": {
-            "min_password_length": 4,
+            "min_password_length": 8,
             "disallow_raw_keys": False,
-            "require_encrypted_metadata": False,
+            "require_encrypted_metadata": True,
         },
     },
     "production": {

@@ -997,7 +997,7 @@ class REPL:
             self._print(f"Unknown kms subcommand: {subcmd}. Type 'kms' for help.")
 
     def _kms_status(self, _args: list[str]) -> None:
-        self._print(f"  provider: {self._orch._km.provider_name}")
+        self._print(f"  provider: {self._orch.kms_provider_name}")
         self._print(f"  keys dir: ~/.filanti/keys/")
 
     def _kms_create_key(self, args: list[str]) -> None:
@@ -1005,33 +1005,22 @@ class REPL:
             self._print("Usage: kms create-key <key_id>")
             return
         key_id = args[0]
-        from filanti.kms.manager import LocalProvider
-        provider = self._orch._km._provider
-        if not isinstance(provider, LocalProvider):
-            self._print(f"{C.RED}Error:{C.RESET} create-key only supported for local provider")
-            return
         try:
-            path = provider.create_master_key(key_id)
+            path = self._orch.kms_create_master_key(key_id)
             self._print(f"{C.GREEN}Created{C.RESET} master key '{key_id}' → {path}")
         except Exception as e:
             self._print(f"{C.RED}Error:{C.RESET} {e}")
 
     def _kms_list(self, _args: list[str]) -> None:
-        from filanti.kms.manager import LocalProvider
-        provider = self._orch._km._provider
-        if not isinstance(provider, LocalProvider):
-            self._print("listing only supported for local provider")
-            return
-        keys_dir = provider._keys_dir
-        if not keys_dir.exists():
-            self._print("  (no keys)")
-            return
-        key_files = sorted(keys_dir.glob("*.key"))
-        if not key_files:
-            self._print("  (no keys)")
-            return
-        for kf in key_files:
-            self._print(f"  {kf.stem}")
+        try:
+            keys = self._orch.kms_list_keys()
+            if not keys:
+                self._print("  (no keys)")
+                return
+            for key_id in keys:
+                self._print(f"  {key_id}")
+        except Exception as e:
+            self._print(f"{C.RED}Error:{C.RESET} {e}")
 
     def _kms_encrypt(self, args: list[str]) -> None:
         if len(args) < 2:
@@ -1045,7 +1034,7 @@ class REPL:
                 output = args[i + 1]
 
         try:
-            dk = self._orch._km.generate_data_key(key_id)
+            dk = self._orch.kms_generate_data_key(key_id)
             ctx = {
                 "input_path": file_path,
                 "output_path": output,
@@ -1077,7 +1066,7 @@ class REPL:
 
         try:
             wrapped = bytes.fromhex(wrapped_hex)
-            raw_key = self._orch._km._provider.unwrap_key(wrapped, key_id)
+            raw_key = self._orch.kms_unwrap_key(wrapped, key_id)
             ctx = {
                 "input_path": file_path,
                 "output_path": output,

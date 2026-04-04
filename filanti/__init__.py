@@ -4,7 +4,7 @@ Filanti — Secure Cryptographic Execution Platform.
 v2: Orchestrator-driven, policy-enforced, streaming-first.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __author__ = "Decliqe"
 
 from filanti.core.errors import (
